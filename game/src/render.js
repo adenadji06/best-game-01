@@ -1,0 +1,413 @@
+// NEON BASTION — everything the eye sees: a deep-space arena, a glowing
+// ship, four drone shapes, particles, and the HUD. It only reads state; it
+// never changes it, so a screenshot can paint any staged world twice and
+// get the same frame.
+import { DRONES, FIELD, PALETTE, PLAYER, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './config.js';
+
+const TAU = Math.PI * 2;
+
+function hexToRgb(hex) {
+  const n = Number.parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function glow(colour, alpha) {
+  const [r, g, b] = hexToRgb(colour);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function drawStarfield(ctx, state, width, height) {
+  const grad = ctx.createLinearGradient(0, 0, 0, height);
+  grad.addColorStop(0, PALETTE.bgTop);
+  grad.addColorStop(1, PALETTE.bgBottom);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, width, height);
+  // Two soft nebula washes, fixed in the corner of the arena.
+  const nebula = (x, y, radius, colour) => {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, radius);
+    g.addColorStop(0, glow(colour, 0.16));
+    g.addColorStop(1, glow(colour, 0));
+    ctx.fillStyle = g;
+    ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  };
+  nebula(width * 0.82, height * 0.18, 260, '#7a2bff');
+  nebula(width * 0.12, height * 0.85, 220, '#0e7490');
+  // Faint grid so the arena reads as a place, not a void.
+  ctx.strokeStyle = PALETTE.grid;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x <= width; x += 60) {
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+  }
+  for (let y = 0; y <= height; y += 60) {
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+  }
+  ctx.stroke();
+  for (const star of state.stars) {
+    const tw = 0.35 + 0.65 * Math.abs(Math.sin(star.twinkle));
+    ctx.fillStyle = `rgba(220, 230, 255, ${tw.toFixed(2)})`;
+    ctx.fillRect(star.x, star.y, star.size, star.size);
+  }
+}
+
+function drawShip(ctx, ship, time) {
+  ctx.save();
+  ctx.translate(ship.x, ship.y);
+  ctx.rotate(ship.angle);
+  // Engine flame, flickering with the thrust the world reports.
+  const flame = 14 + ship.thrust * 12 + Math.sin(time * 40) * 3;
+  const flameGrad = ctx.createLinearGradient(-10, 0, -10 - flame, 0);
+  flameGrad.addColorStop(0, 'rgba(255, 190, 80, 0.9)');
+  flameGrad.addColorStop(1, 'rgba(255, 80, 40, 0)');
+  ctx.fillStyle = flameGrad;
+  ctx.beginPath();
+  ctx.moveTo(-10, -5);
+  ctx.lineTo(-10 - flame, 0);
+  ctx.lineTo(-10, 5);
+  ctx.closePath();
+  ctx.fill();
+  // Blink while invulnerable so a hit reads at a glance.
+  if (ship.invuln > 0 && Math.floor(time * 12) % 2 === 0) ctx.globalAlpha = 0.35;
+  ctx.shadowColor = PALETTE.ship;
+  ctx.shadowBlur = 18;
+  ctx.fillStyle = PALETTE.ship;
+  ctx.beginPath();
+  ctx.moveTo(20, 0);
+  ctx.lineTo(-12, -11);
+  ctx.lineTo(-6, 0);
+  ctx.lineTo(-12, 11);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = PALETTE.shipCore;
+  ctx.beginPath();
+  ctx.moveTo(12, 0);
+  ctx.lineTo(-6, -5);
+  ctx.lineTo(-3, 0);
+  ctx.lineTo(-6, 5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawDrone(ctx, drone, time) {
+  const def = DRONES[drone.kind];
+  ctx.save();
+  ctx.translate(drone.x, drone.y);
+  ctx.shadowColor = def.colour;
+  ctx.shadowBlur = 14;
+  ctx.fillStyle = def.colour;
+  ctx.strokeStyle = def.colour;
+  ctx.lineWidth = 2;
+  if (drone.kind === 'dart') {
+    ctx.rotate(drone.angle);
+    ctx.beginPath();
+    ctx.moveTo(14, 0);
+    ctx.lineTo(-10, -9);
+    ctx.lineTo(-5, 0);
+    ctx.lineTo(-10, 9);
+    ctx.closePath();
+    ctx.fill();
+  } else if (drone.kind === 'weaver') {
+    ctx.rotate(drone.angle + Math.sin(time * 4 + drone.phase) * 0.4);
+    ctx.beginPath();
+    ctx.moveTo(0, -14);
+    ctx.lineTo(11, 0);
+    ctx.lineTo(0, 14);
+    ctx.lineTo(-11, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#1a1030';
+    ctx.beginPath();
+    ctx.arc(0, 0, 4, 0, TAU);
+    ctx.fill();
+  } else if (drone.kind === 'bulwark') {
+    ctx.rotate(time * 0.5 + drone.phase);
+    ctx.beginPath();
+    for (let i = 0; i < 6; i += 1) {
+      const a = (i / 6) * TAU;
+      const x = Math.cos(a) * 21;
+      const y = Math.sin(a) * 21;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#efe6ff';
+    ctx.beginPath();
+    ctx.arc(0, 0, 9, 0, TAU);
+    ctx.stroke();
+  } else {
+    // The boss: a big hex hull, a spinning outer ring and a hot core.
+    ctx.rotate(Math.sin(time * 0.8) * 0.25);
+    ctx.beginPath();
+    for (let i = 0; i < 6; i += 1) {
+      const a = (i / 6) * TAU;
+      const x = Math.cos(a) * 46;
+      const y = Math.sin(a) * 46;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#ffd7de';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, 58, time * 0.7, time * 0.7 + Math.PI * 1.5);
+    ctx.stroke();
+    ctx.fillStyle = '#fff1f3';
+    ctx.beginPath();
+    ctx.arc(0, 0, 12 + Math.sin(time * 6) * 3, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+  // A thin hull bar over anything that takes more than one hit.
+  if (drone.maxHull > 1 && drone.kind !== 'boss') {
+    const w = drone.radius * 2;
+    const ratio = Math.max(0, drone.hull / drone.maxHull);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillRect(drone.x - w / 2, drone.y - drone.radius - 12, w, 4);
+    ctx.fillStyle = def.colour;
+    ctx.fillRect(drone.x - w / 2, drone.y - drone.radius - 12, w * ratio, 4);
+  }
+}
+
+function drawHud(ctx, state, best) {
+  const width = FIELD.width;
+  ctx.textBaseline = 'alphabetic';
+  // Score, top left, big and bright.
+  ctx.fillStyle = PALETTE.text;
+  ctx.font = '700 30px "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(String(state.score).padStart(6, '0'), 18, 38);
+  ctx.fillStyle = PALETTE.dim;
+  ctx.font = '600 12px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText(`BEST ${best}`, 18, 58);
+  // Wave, top centre.
+  ctx.fillStyle = PALETTE.text;
+  ctx.font = '700 20px "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`WAVE ${Math.max(1, state.wave)}`, width / 2, 34);
+  ctx.fillStyle = PALETTE.dim;
+  ctx.font = '600 12px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText(`${state.kills} DRONES DOWN`, width / 2, 54);
+  // Hull hearts, top right, drawn as hearts so they read at any size.
+  ctx.textAlign = 'right';
+  for (let i = 0; i < PLAYER.hull; i += 1) {
+    const x = width - 24 - i * 30;
+    const y = 26;
+    ctx.fillStyle = i < state.ship.hull ? '#ff4d6d' : 'rgba(255, 77, 109, 0.22)';
+    ctx.beginPath();
+    ctx.moveTo(x, y + 7);
+    ctx.bezierCurveTo(x - 11, y - 3, x - 6, y - 11, x, y - 4);
+    ctx.bezierCurveTo(x + 6, y - 11, x + 11, y - 3, x, y + 7);
+    ctx.fill();
+  }
+  // Combo meter under the hearts while a combo is alive.
+  if (state.combo > 1) {
+    ctx.fillStyle = '#ffe45e';
+    ctx.font = '700 18px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(`COMBO x${state.combo}`, width - 18, 66);
+    const barW = 110;
+    const ratio = Math.max(0, state.comboIn / 3);
+    ctx.fillStyle = 'rgba(255, 228, 94, 0.25)';
+    ctx.fillRect(width - 18 - barW, 74, barW, 5);
+    ctx.fillStyle = '#ffe45e';
+    ctx.fillRect(width - 18 - barW, 74, barW * ratio, 5);
+  }
+  // Boss health bar, centred under the wave line.
+  if (state.boss) {
+    const barW = 340;
+    const x = (width - barW) / 2;
+    const ratio = Math.max(0, state.boss.hull / state.boss.maxHull);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillRect(x, 66, barW, 10);
+    ctx.fillStyle = '#ff2e4d';
+    ctx.fillRect(x, 66, barW * ratio, 10);
+    ctx.fillStyle = PALETTE.text;
+    ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('BASTION BREAKER', width / 2, 90);
+  }
+}
+
+function panel(ctx, width, height) {
+  ctx.fillStyle = 'rgba(5, 3, 16, 0.72)';
+  ctx.fillRect(0, 0, width, height);
+}
+
+function bigTitle(ctx, text, y, size, colour) {
+  ctx.font = `800 ${size}px "Segoe UI", system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.shadowColor = colour;
+  ctx.shadowBlur = 26;
+  ctx.fillStyle = colour;
+  ctx.fillText(text, FIELD.width / 2, y);
+  ctx.shadowBlur = 0;
+}
+
+function drawTitle(ctx, state, best) {
+  panel(ctx, FIELD.width, FIELD.height);
+  bigTitle(ctx, 'NEON', 190, 84, PALETTE.ship);
+  bigTitle(ctx, 'BASTION', 268, 84, '#b06bff');
+  ctx.fillStyle = PALETTE.text;
+  ctx.font = '600 19px "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Hold the arena. Blast the drone waves. Grab the cores.', FIELD.width / 2, 312);
+  ctx.fillStyle = PALETTE.dim;
+  ctx.font = '500 15px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText('WASD / ARROWS — fly      MOUSE — aim      SPACE / CLICK — fire      P — pause', FIELD.width / 2, 348);
+  ctx.fillText('A boss breaks in every 5th wave. Chain kills to raise your combo.', FIELD.width / 2, 372);
+  if (best > 0) {
+    ctx.fillStyle = '#ffe45e';
+    ctx.font = '700 16px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(`BEST SCORE ${best}`, FIELD.width / 2, 408);
+  }
+  const pulse = 0.65 + 0.35 * Math.sin(state.time * 4);
+  ctx.fillStyle = `rgba(55, 245, 211, ${pulse.toFixed(2)})`;
+  ctx.font = '700 22px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText('PRESS ENTER OR CLICK TO LAUNCH', FIELD.width / 2, 458);
+  ctx.fillStyle = PALETTE.dim;
+  ctx.font = '500 13px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText('3 hull. No continues. How many waves can you hold?', FIELD.width / 2, 500);
+}
+
+function drawPaused(ctx) {
+  panel(ctx, FIELD.width, FIELD.height);
+  bigTitle(ctx, 'PAUSED', 260, 56, PALETTE.text);
+  ctx.fillStyle = PALETTE.dim;
+  ctx.font = '500 17px "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Press P or click to keep flying.', FIELD.width / 2, 310);
+}
+
+function drawOver(ctx, state, best) {
+  panel(ctx, FIELD.width, FIELD.height);
+  bigTitle(ctx, 'BASTION LOST', 200, 64, PALETTE.danger);
+  ctx.fillStyle = PALETTE.text;
+  ctx.font = '700 30px "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`SCORE ${state.score}`, FIELD.width / 2, 268);
+  ctx.fillStyle = state.score >= best && state.score > 0 ? '#ffe45e' : PALETTE.dim;
+  ctx.font = '600 17px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText(
+    state.score >= best && state.score > 0 ? 'NEW BEST — the arena remembers you' : `BEST ${best}`,
+    FIELD.width / 2,
+    302,
+  );
+  ctx.fillStyle = PALETTE.dim;
+  ctx.font = '500 16px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText(`You held ${Math.max(1, state.wave)} wave${state.wave === 1 ? '' : 's'} and downed ${state.kills} drones.`, FIELD.width / 2, 340);
+  const pulse = 0.65 + 0.35 * Math.sin(state.time * 4);
+  ctx.fillStyle = `rgba(55, 245, 211, ${pulse.toFixed(2)})`;
+  ctx.font = '700 21px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText('PRESS R OR CLICK TO FLY AGAIN', FIELD.width / 2, 402);
+}
+
+function drawBanner(ctx, state) {
+  if (state.bannerIn <= 0 || !state.banner) return;
+  const alpha = Math.min(1, state.bannerIn / 0.5);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = '800 30px "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#b06bff';
+  ctx.shadowBlur = 22;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(state.banner, FIELD.width / 2, 150);
+  ctx.restore();
+}
+
+export function createRenderer(canvas) {
+  const ctx = canvas.getContext('2d');
+  function resize() {
+    const scale = Math.min(window.innerWidth / FIELD.width, window.innerHeight / FIELD.height);
+    canvas.width = Math.round(FIELD.width * scale);
+    canvas.height = Math.round(FIELD.height * scale);
+    canvas.style.width = `${canvas.width}px`;
+    canvas.style.height = `${canvas.height}px`;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  function paint(world, screen, best) {
+    const state = world.state;
+    ctx.save();
+    const scale = canvas.width / FIELD.width;
+    ctx.scale(scale, scale);
+    if (state.shake > 0) {
+      const mag = state.shake * 14;
+      ctx.translate((Math.random() - 0.5) * mag, (Math.random() - 0.5) * mag);
+    }
+    drawStarfield(ctx, state, FIELD.width, FIELD.height);
+    // Cores: spinning diamonds with a warm glow.
+    for (const core of state.cores) {
+      ctx.save();
+      ctx.translate(core.x, core.y);
+      ctx.rotate(state.time * 3);
+      ctx.shadowColor = PALETTE.core;
+      ctx.shadowBlur = 12;
+      ctx.fillStyle = PALETTE.core;
+      ctx.beginPath();
+      ctx.moveTo(0, -8);
+      ctx.lineTo(6, 0);
+      ctx.lineTo(0, 8);
+      ctx.lineTo(-6, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    for (const drone of state.drones) drawDrone(ctx, drone, state.time);
+    // Bullets: bright streaks, player cyan, enemy ember.
+    ctx.lineCap = 'round';
+    for (const bullet of state.bullets) {
+      ctx.strokeStyle = PALETTE.bullet;
+      ctx.lineWidth = 3;
+      ctx.shadowColor = PALETTE.bullet;
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.moveTo(bullet.x - bullet.vx * 0.02, bullet.y - bullet.vy * 0.02);
+      ctx.lineTo(bullet.x, bullet.y);
+      ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+    for (const shot of state.enemyBullets) {
+      ctx.fillStyle = PALETTE.enemyBullet;
+      ctx.shadowColor = PALETTE.enemyBullet;
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.arc(shot.x, shot.y, shot.radius, 0, TAU);
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+    if (!state.over) drawShip(ctx, state.ship, state.time);
+    for (const p of state.particles) {
+      ctx.globalAlpha = Math.max(0, p.life / p.max);
+      ctx.fillStyle = p.colour;
+      ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+    }
+    ctx.globalAlpha = 1;
+    if (screen === SCREEN_PLAY || screen === SCREEN_PAUSED) {
+      for (const p of state.popups) {
+        ctx.globalAlpha = Math.max(0, p.life);
+        ctx.fillStyle = p.colour;
+        ctx.font = '700 15px "Segoe UI", system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(p.text, p.x, p.y);
+      }
+    }
+    ctx.globalAlpha = 1;
+    if (screen === SCREEN_PLAY || screen === SCREEN_PAUSED) drawHud(ctx, state, best);
+    if (screen === SCREEN_PLAY || screen === SCREEN_PAUSED) drawBanner(ctx, state);
+    if (screen === SCREEN_TITLE) drawTitle(ctx, state, best);
+    if (screen === SCREEN_PAUSED) drawPaused(ctx);
+    if (screen === SCREEN_OVER) drawOver(ctx, state, best);
+    ctx.restore();
+  }
+
+  return { paint, resize };
+}
