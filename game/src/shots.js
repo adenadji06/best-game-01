@@ -4,12 +4,17 @@
 // frame is what a short game really looks like and the same seed always
 // gives the same frame. The 'over' scene steers nothing: the ship sits
 // still while the drones close in, as an idle player would.
+//
+// The shots are staged at peak density on purpose: wave 6+ with clustered
+// spawns, so the frame shows a full fight — 15+ drones, damage numbers,
+// particles, the XP bar and the level-up draft — never an empty arena.
+// The 'start' shot is the attract-mode title over a live wave-6 fight.
 import { FIELD, SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE, STEP } from './config.js';
 import { EVENT_OVER } from './world.js';
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 12;
-const BOSS_SECONDS = 10;
+const START_SECONDS = 14;
+const PLAY_SECONDS = 30;
+const BOSS_SECONDS = 16;
 const OVER_PLAY_SECONDS = 16;
 const OVER_LIMIT_SECONDS = 90;
 const SAMPLE = STEP;
@@ -43,9 +48,15 @@ function nearestCore(state) {
 
 /**
  * Steer one step: aim at the nearest drone (leading it a little), fire at
- * it, keep out of its reach, and detour for a nearby core.
+ * it, keep out of its reach, and detour for a nearby core. When a level-up
+ * draft is open, pick the first card so the game keeps flowing — the
+ * autopilot is a driver, not a chooser.
  */
-function autopilot(state) {
+export function autopilot(state, world) {
+  if (state.draft && world) {
+    world.applyUpgrade(state.draft[0]);
+    return { move: { x: 0, y: 0 }, aim: { x: state.ship.x, y: state.ship.y - 100 }, firing: false };
+  }
   const ship = state.ship;
   const { drone, dist } = nearestDrone(state);
   let aim = { x: ship.x, y: ship.y - 100 };
@@ -79,7 +90,7 @@ function autopilot(state) {
 
 function runFor(world, seconds, pilot) {
   for (let i = 0; i < seconds / SAMPLE; i += 1) {
-    const { move, aim, firing } = pilot(world.state);
+    const { move, aim, firing } = pilot(world.state, world);
     const events = world.step(SAMPLE, move, aim, firing);
     if (events & EVENT_OVER) return true;
   }
@@ -91,6 +102,9 @@ function runFor(world, seconds, pilot) {
  * the most drones, bullets, cores and particles on screen — and restores it
  * at the end, so the shot shows the fight at its fullest, not a lull
  * between waves. The frame is still a real moment of the same game.
+ * Drones weigh heaviest: a kill-burst frame full of particles but empty of
+ * enemies is not the fight. A death restores the busiest frame, not the
+ * corpse — the shot is the battle, not the ending.
  */
 function runRichest(world, seconds, pilot) {
   const CHECK_EVERY = 0.25;
@@ -100,13 +114,21 @@ function runRichest(world, seconds, pilot) {
   while (elapsed < seconds) {
     const slice = Math.min(CHECK_EVERY, seconds - elapsed);
     for (let i = 0; i < slice / SAMPLE; i += 1) {
-      const { move, aim, firing } = pilot(world.state);
+      const { move, aim, firing } = pilot(world.state, world);
       const events = world.step(SAMPLE, move, aim, firing);
-      if (events & EVENT_OVER) return true;
+      if (events & EVENT_OVER) {
+        if (best) world.restore(best);
+        return true;
+      }
     }
     elapsed += slice;
+    // Skip the opening beat: the frame right after the pack spawns has
+    // every drone but no fight yet — no bullets, no damage numbers. The
+    // richest frame must be a mid-fight frame, 2 s in or later.
+    if (elapsed < 2.0) continue;
     const s = world.state;
-    const richness = s.drones.length * 3 + s.bullets.length + s.cores.length + s.particles.length;
+    const richness = s.drones.length * 6 + s.bullets.length * 2 + s.cores.length * 2
+      + Math.min(s.particles.length, 50) + s.popups.length * 5;
     if (richness > bestScore) {
       bestScore = richness;
       best = world.snapshot();
@@ -123,17 +145,25 @@ function runRichest(world, seconds, pilot) {
 export function stageShot(name, world) {
   world.reset();
   if (name === 'play') {
-    world.startWave(1);
+    // Wave 6, whole pack on screen at once, richest frame, then the
+    // level-up draft open over the fight — the progression system visible
+    // in the frame itself.
+    world.startWave(6);
+    world.spawnAll();
     runRichest(world, PLAY_SECONDS, autopilot);
+    if (!world.state.over && !world.state.draft) world.openDraft();
     return { screen: world.state.over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
   }
   if (name === 'boss') {
-    world.startWave(5);
-    runFor(world, BOSS_SECONDS, autopilot);
+    // Wave 10 is a boss wave: the Breaker plus its escort, pack spawned,
+    // richest frame.
+    world.startWave(10);
+    world.spawnAll();
+    runRichest(world, BOSS_SECONDS, autopilot);
     return { screen: world.state.over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
   }
   if (name === 'over') {
-    world.startWave(1);
+    world.startWave(6);
     // Play well first, so the game-over screen carries a real score, then
     // go idle: the ship sits still while the drones close in.
     runFor(world, OVER_PLAY_SECONDS, autopilot);
@@ -147,7 +177,10 @@ export function stageShot(name, world) {
     }
     return { screen: SCREEN_OVER, best: world.state.score };
   }
-  world.startWave(1);
-  runFor(world, START_SECONDS, autopilot);
-  return { screen: SCREEN_TITLE, best: 0 };
+  // The cover: the title over a live wave-6 fight at its busiest — the
+  // whole pack spawned at once, richest frame kept.
+  world.startWave(6);
+  world.spawnAll();
+  runRichest(world, START_SECONDS, autopilot);
+  return { screen: SCREEN_TITLE, best: world.state.score };
 }

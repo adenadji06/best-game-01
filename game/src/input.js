@@ -98,9 +98,18 @@ export function createInput(canvas) {
     return actions;
   }
 
+  // Draft picks: which of keys 1/2/3 was pressed since the last frame.
+  function pollDigits() {
+    const digits = [];
+    if (takeAction('Digit1') || takeAction('Numpad1')) digits.push(1);
+    if (takeAction('Digit2') || takeAction('Numpad2')) digits.push(2);
+    if (takeAction('Digit3') || takeAction('Numpad3')) digits.push(3);
+    return digits;
+  }
+
   function firing() {
     return held.has('Space') || mouse.down;
   }
 
-  return { moveVector, pollActions, firing, mouse };
+  return { moveVector, pollActions, pollDigits, firing, mouse };
 }

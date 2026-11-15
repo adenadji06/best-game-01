@@ -2,7 +2,15 @@
 // and the wave machine. Pure state plus one fixed step; drawing lives in
 // render.js and the boot loop in main.js, so this file can be driven by a
 // screenshot autopilot exactly like a player.
-import { BULLET, COMBO, CORE, DRONES, FIELD, PALETTE, PLAYER, STEP, WAVES } from './config.js';
+//
+// Progression: kills and cores grant XP; filling the bar opens a level-up
+// draft (pick 1 of 3 upgrades) and pauses the fight until the player picks.
+// Upgrades live on state.upgrades as plain levels, so the draft, the HUD
+// and the renderer all read the same numbers.
+import {
+  BULLET, COMBO, CORE, DRONES, FIELD, NOVA, PALETTE, PLAYER, STEP,
+  UPGRADE_ORDER, UPGRADES, WAVES, XP,
+} from './config.js';
 
 export const EVENT_HIT = 1;
 export const EVENT_KILL = 2;
@@ -11,6 +19,8 @@ export const EVENT_CLEAR = 8;
 export const EVENT_OVER = 16;
 export const EVENT_BOSS = 32;
 export const EVENT_SHOT = 64;
+export const EVENT_LEVEL = 128;
+export const EVENT_NOVA = 256;
 
 const TAU = Math.PI * 2;
 
@@ -42,7 +52,10 @@ function waveRoster(random, wave) {
   const isBoss = wave % WAVES.bossEvery === 0;
   if (isBoss) {
     roster.push('boss');
-    for (let i = 0; i < 2 + wave / WAVES.bossEvery; i += 1) roster.push('dart');
+    // A boss wave brings a real escort, not a token pair of darts.
+    for (let i = 0; i < 10 + Math.floor(wave / WAVES.bossEvery); i += 1) {
+      roster.push(random.next() < 0.5 ? 'dart' : 'weaver');
+    }
     return roster;
   }
   const count = WAVES.baseCount + (wave - 1) * WAVES.perWave;
@@ -55,6 +68,23 @@ function waveRoster(random, wave) {
   return roster;
 }
 
+// Drones spawn in clusters of up to clusterSize from one shared anchor,
+// so the arena fills with packs instead of a thin trickle from all sides.
+function clusterAnchors(random, roster) {
+  const anchors = [];
+  let left = 0;
+  let anchor = null;
+  for (let i = 0; i < roster.length; i += 1) {
+    if (left <= 0) {
+      anchor = edgeSpawn(random);
+      left = WAVES.clusterSize;
+    }
+    anchors.push(anchor);
+    left -= 1;
+  }
+  return anchors;
+}
+
 export function createWorld(random) {
   const state = {
     ship: makeShip(),
@@ -65,12 +95,14 @@ export function createWorld(random) {
     particles: [],
     popups: [],
     stars: [],
+    props: [],
     wave: 0,
     score: 0,
     combo: 0,
     comboIn: 0,
     kills: 0,
     spawnQueue: [],
+    spawnAnchors: [],
     spawnIn: 0,
     banner: '',
     bannerIn: 0,
@@ -78,6 +110,14 @@ export function createWorld(random) {
     shake: 0,
     time: 0,
     over: false,
+    // Progression.
+    xp: 0,
+    level: 1,
+    xpNext: XP.baseNext,
+    maxHull: PLAYER.hull,
+    upgrades: { rapid: 0, spread: 0, aegis: 0, magnet: 0, nova: 0 },
+    draft: null, // null, or an array of 3 upgrade ids awaiting a pick
+    novaIn: NOVA.baseGap,
   };
   for (let i = 0; i < 90; i += 1) {
     state.stars.push({
@@ -86,6 +126,19 @@ export function createWorld(random) {
       size: random.range(0.6, 2.2),
       twinkle: random.range(0, TAU),
       speed: random.range(0.4, 1.6),
+    });
+  }
+  for (let i = 0; i < 7; i += 1) {
+    // Keep props out of the ship's launch lane (centre bottom).
+    const x = random.range(40, FIELD.width - 40);
+    const y = random.range(40, FIELD.height - 160);
+    state.props.push({
+      x, y,
+      r: random.range(22, 46),
+      rot: random.next() * TAU,
+      points: 7 + Math.floor(random.next() * 3),
+      colour: random.next() < 0.5 ? '#2a1b4d' : '#132a3d',
+      rim: random.next() < 0.5 ? '#7a2bff' : '#0e7490',
     });
   }
 
@@ -105,13 +158,14 @@ export function createWorld(random) {
     }
   }
 
-  function popup(x, y, text, colour) {
-    state.popups.push({ x, y, text, colour, life: 1.0 });
+  function popup(x, y, text, colour, size = 15) {
+    state.popups.push({ x, y, text, colour, life: 1.0, size });
   }
 
   function startWave(wave) {
     state.wave = wave;
     state.spawnQueue = waveRoster(random, wave);
+    state.spawnAnchors = clusterAnchors(random, state.spawnQueue);
     state.spawnIn = 0.6;
     const isBoss = wave % WAVES.bossEvery === 0;
     state.banner = isBoss ? `WAVE ${wave} — BASTION BREAKER INBOUND` : `WAVE ${wave}`;
@@ -120,9 +174,15 @@ export function createWorld(random) {
     return 0;
   }
 
-  function spawnDrone(kind) {
+  function spawnDrone(kind, anchor) {
     const def = DRONES[kind];
-    const at = edgeSpawn(random);
+    const at = anchor
+      ? {
+        x: Math.max(-30, Math.min(FIELD.width + 30, anchor.x + random.range(-46, 46))),
+        y: Math.max(-30, Math.min(FIELD.height + 30, anchor.y + random.range(-46, 46))),
+      }
+      : edgeSpawn(random);
+    const hullBonus = Math.floor(state.wave / 4) * BULLET.damage;
     const drone = {
       kind,
       x: at.x,
@@ -130,16 +190,58 @@ export function createWorld(random) {
       vx: 0,
       vy: 0,
       radius: def.radius,
-      hull: def.hull + Math.floor(state.wave / 4),
-      maxHull: def.hull + Math.floor(state.wave / 4),
+      hull: def.hull + hullBonus,
+      maxHull: def.hull + hullBonus,
       speed: def.speed * (1 + state.wave * 0.02),
       phase: random.next() * TAU,
       fireIn: random.range(1.5, 3.5),
       angle: 0,
+      flash: 0,
     };
     state.drones.push(drone);
     if (kind === 'boss') state.boss = drone;
     return drone;
+  }
+
+  function gainXp(amount) {
+    if (state.draft || state.over) return 0;
+    state.xp += amount;
+    if (state.xp < state.xpNext) return 0;
+    state.xp -= state.xpNext;
+    state.level += 1;
+    state.xpNext = XP.baseNext + (state.level - 1) * XP.perLevel;
+    openDraft();
+    return EVENT_LEVEL;
+  }
+
+  // Offer 3 distinct upgrades the player has not maxed yet. When every
+  // upgrade is maxed there is no draft — the level pays out in score.
+  function openDraft() {
+    const open = UPGRADE_ORDER.filter((id) => state.upgrades[id] < UPGRADES[id].max);
+    if (open.length === 0) {
+      state.score += 500;
+      popup(FIELD.width / 2, FIELD.height / 2 - 40, 'MAXED OUT +500', '#ffe45e');
+      return;
+    }
+    const pool = [...open];
+    const picks = [];
+    while (picks.length < 3 && pool.length > 0) {
+      picks.push(pool.splice(Math.floor(random.next() * pool.length), 1)[0]);
+    }
+    state.draft = picks;
+  }
+
+  function applyUpgrade(id) {
+    if (!state.draft || !state.draft.includes(id)) return false;
+    state.upgrades[id] += 1;
+    state.draft = null;
+    if (id === 'aegis') {
+      state.maxHull += 1;
+      state.ship.hull = Math.min(state.maxHull, state.ship.hull + 1);
+    }
+    popup(state.ship.x, state.ship.y - 30, `${UPGRADES[id].name} LV${state.upgrades[id]}`, '#37f5d3', 17);
+    burst(state.ship.x, state.ship.y, '#37f5d3', 24, 240);
+    return true;
   }
 
   function killDrone(drone) {
@@ -150,10 +252,10 @@ export function createWorld(random) {
     const gained = def.score * Math.max(1, state.combo);
     state.score += gained;
     popup(drone.x, drone.y - drone.radius, `+${gained}`, def.colour);
-    burst(drone.x, drone.y, def.colour, drone.kind === 'boss' ? 60 : 18, 260);
+    burst(drone.x, drone.y, def.colour, drone.kind === 'boss' ? 80 : 26, 260);
+    state.shake = Math.max(state.shake, drone.kind === 'boss' ? 0.5 : 0.12);
     if (drone.kind === 'boss') {
       state.boss = null;
-      state.shake = 0.5;
       burst(drone.x, drone.y, '#ffffff', 40, 380);
     }
     if (random.next() < CORE.dropChance || drone.kind === 'boss') {
@@ -169,7 +271,7 @@ export function createWorld(random) {
         });
       }
     }
-    return EVENT_KILL;
+    return EVENT_KILL | gainXp(def.xp);
   }
 
   function hitShip() {
@@ -186,6 +288,14 @@ export function createWorld(random) {
       return EVENT_HIT | EVENT_OVER;
     }
     return EVENT_HIT;
+  }
+
+  function fireGap() {
+    return PLAYER.fireGap * Math.pow(0.85, state.upgrades.rapid);
+  }
+
+  function magnetRadius() {
+    return CORE.magnet * Math.pow(1.5, state.upgrades.magnet);
   }
 
   function stepShip(dt, move, aim, firing) {
@@ -211,23 +321,52 @@ export function createWorld(random) {
     ship.fireIn -= dt;
     if (ship.invuln > 0) ship.invuln -= dt;
     if (firing && ship.fireIn <= 0) {
-      ship.fireIn = PLAYER.fireGap;
-      state.bullets.push({
-        x: ship.x + Math.cos(ship.angle) * (ship.radius + 6),
-        y: ship.y + Math.sin(ship.angle) * (ship.radius + 6),
-        vx: Math.cos(ship.angle) * PLAYER.bulletSpeed,
-        vy: Math.sin(ship.angle) * PLAYER.bulletSpeed,
-        radius: BULLET.playerRadius,
-        life: 1.2,
-      });
+      ship.fireIn = fireGap();
+      // Spread shot: extra streams fan out from the aim angle.
+      const streams = 1 + state.upgrades.spread;
+      for (let s = 0; s < streams; s += 1) {
+        const off = (s - (streams - 1) / 2) * 0.09;
+        const a = ship.angle + off;
+        state.bullets.push({
+          x: ship.x + Math.cos(a) * (ship.radius + 6),
+          y: ship.y + Math.sin(a) * (ship.radius + 6),
+          vx: Math.cos(a) * PLAYER.bulletSpeed,
+          vy: Math.sin(a) * PLAYER.bulletSpeed,
+          radius: BULLET.playerRadius,
+          life: 1.2,
+        });
+      }
       return true;
     }
     return false;
   }
 
+  function stepNova(dt) {
+    if (state.upgrades.nova <= 0) return 0;
+    state.novaIn -= dt;
+    if (state.novaIn > 0) return 0;
+    state.novaIn = Math.max(NOVA.minGap, NOVA.baseGap - NOVA.gapPerLevel * state.upgrades.nova);
+    const ship = state.ship;
+    let events = EVENT_NOVA;
+    burst(ship.x, ship.y, '#b06bff', 36, 420);
+    for (const drone of state.drones) {
+      const dist = Math.hypot(drone.x - ship.x, drone.y - ship.y);
+      if (dist < NOVA.radius + drone.radius) {
+        drone.hull -= NOVA.damage;
+        drone.flash = 0.12;
+        popup(drone.x, drone.y - drone.radius, `-${NOVA.damage}`, '#b06bff', 13);
+        if (drone.hull <= 0) events |= killDrone(drone);
+      }
+    }
+    state.drones = state.drones.filter((d) => d.hull > 0);
+    state.shake = Math.max(state.shake, 0.2);
+    return events;
+  }
+
   function stepDrones(dt) {
     const ship = state.ship;
     for (const drone of state.drones) {
+      if (drone.flash > 0) drone.flash -= dt;
       const def = DRONES[drone.kind];
       const dx = ship.x - drone.x;
       const dy = ship.y - drone.y;
@@ -304,9 +443,13 @@ export function createWorld(random) {
         const dy = drone.y - bullet.y;
         const reach = drone.radius + bullet.radius;
         if (dx * dx + dy * dy < reach * reach) {
-          drone.hull -= 1;
+          const crit = random.next() < BULLET.critChance;
+          const damage = crit ? BULLET.damage * 2 : BULLET.damage;
+          drone.hull -= damage;
+          drone.flash = 0.09;
           bullet.life = 0;
           burst(bullet.x, bullet.y, '#8ef7ff', 4, 140);
+          popup(bullet.x, bullet.y - 8, crit ? `${damage}!` : `${damage}`, crit ? '#ffe45e' : '#bfefff', crit ? 15 : 12);
           if (drone.hull <= 0) events |= killDrone(drone);
           break;
         }
@@ -336,12 +479,13 @@ export function createWorld(random) {
   function stepCores(dt) {
     let events = 0;
     const ship = state.ship;
+    const magnet = magnetRadius();
     for (const core of state.cores) {
       core.life -= dt;
       const dx = ship.x - core.x;
       const dy = ship.y - core.y;
       const dist = Math.hypot(dx, dy) || 1;
-      if (dist < CORE.magnet) {
+      if (dist < magnet) {
         core.vx += (dx / dist) * 900 * dt;
         core.vy += (dy / dist) * 900 * dt;
       } else {
@@ -357,6 +501,7 @@ export function createWorld(random) {
         popup(core.x, core.y - 10, `+${gained}`, '#ffe45e');
         burst(core.x, core.y, '#ffe45e', 6, 120);
         events |= EVENT_CORE;
+        events |= gainXp(CORE.xp);
       }
     }
     state.cores = state.cores.filter((c) => c.life > 0);
@@ -395,10 +540,15 @@ export function createWorld(random) {
 
   // Advance the world one fixed step. `move` is a -1..1 vector, `aim` a field
   // point, `firing` whether the trigger is held. Returns an event bitmask.
+  // While a level-up draft is open the fight is frozen: only particles move.
   function step(dt, move, aim, firing) {
     if (state.over) {
       stepFx(dt);
       return EVENT_OVER;
+    }
+    if (state.draft) {
+      stepFx(dt);
+      return 0;
     }
     state.time += dt;
     let events = 0;
@@ -407,7 +557,12 @@ export function createWorld(random) {
       state.spawnIn -= dt;
       if (state.spawnIn <= 0) {
         state.spawnIn = WAVES.spawnGap;
-        spawnDrone(state.spawnQueue.shift());
+        // From wave 5 the packs arrive two at a time: the arena stays
+        // crowded instead of draining to a trickle between kills.
+        const burst = state.wave >= 5 ? 2 : 1;
+        for (let i = 0; i < burst && state.spawnQueue.length > 0; i += 1) {
+          spawnDrone(state.spawnQueue.shift(), state.spawnAnchors.shift());
+        }
       }
     } else if (state.drones.length === 0 && state.wave > 0) {
       state.score += WAVES.clearBonus * state.wave;
@@ -419,6 +574,7 @@ export function createWorld(random) {
     }
     stepDrones(dt);
     events |= stepBullets(dt);
+    events |= stepNova(dt);
     events |= stepCores(dt);
     stepFx(dt);
     if (state.over) events |= EVENT_OVER;
@@ -440,6 +596,7 @@ export function createWorld(random) {
     state.comboIn = 0;
     state.kills = 0;
     state.spawnQueue = [];
+    state.spawnAnchors = [];
     state.spawnIn = 0;
     state.banner = '';
     state.bannerIn = 0;
@@ -447,6 +604,21 @@ export function createWorld(random) {
     state.shake = 0;
     state.time = 0;
     state.over = false;
+    state.xp = 0;
+    state.level = 1;
+    state.xpNext = XP.baseNext;
+    state.maxHull = PLAYER.hull;
+    state.upgrades = { rapid: 0, spread: 0, aegis: 0, magnet: 0, nova: 0 };
+    state.draft = null;
+    state.novaIn = NOVA.baseGap;
+  }
+
+  // Spawn the whole queued wave at once, from its cluster anchors, so a
+  // staged frame shows the wave as a pack instead of a trickle.
+  function spawnAll() {
+    while (state.spawnQueue.length > 0) {
+      spawnDrone(state.spawnQueue.shift(), state.spawnAnchors.shift());
+    }
   }
 
   function snapshot() {
@@ -458,5 +630,5 @@ export function createWorld(random) {
     Object.assign(state, structuredClone(snap));
   }
 
-  return { state, step, reset, startWave, burst, popup, hitShip, snapshot, restore };
+  return { state, step, reset, startWave, burst, popup, hitShip, openDraft, applyUpgrade, snapshot, restore, spawnAll };
 }

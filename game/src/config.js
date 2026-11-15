@@ -5,7 +5,7 @@ export const STEP = 1 / 60;
 export const BEST_KEY = 'neon-bastion-best';
 
 export const PLAYER = {
-  radius: 14,
+  radius: 16,
   speed: 360,
   accel: 2600,
   drag: 6.5,
@@ -15,27 +15,49 @@ export const PLAYER = {
   invulnSeconds: 2.0,
 };
 
-export const BULLET = { playerRadius: 4, enemyRadius: 5, enemySpeed: 230 };
+// One bullet deals this much hull damage; a crit (12%) deals double.
+// Drone hull is scaled to match, so damage numbers read 5 / 10, not 1.
+export const BULLET = { playerRadius: 5, enemyRadius: 5, enemySpeed: 230, damage: 5, critChance: 0.12 };
 
-// Drone kinds: how fast they move, how much hull they take to kill, what
-// they are worth, and the colour they glow.
 export const DRONES = {
-  dart:    { radius: 12, speed: 135, hull: 1, score: 50,  colour: '#ff5d8f' },
-  weaver:  { radius: 13, speed: 105, hull: 2, score: 80,  colour: '#ffb020' },
-  bulwark: { radius: 21, speed: 55,  hull: 6, score: 150, colour: '#b06bff' },
-  boss:    { radius: 46, speed: 42,  hull: 70, score: 1000, colour: '#ff2e4d' },
+  dart:    { radius: 15, speed: 135, hull: 5,  score: 50,  colour: '#ff5d8f', xp: 5 },
+  weaver:  { radius: 16, speed: 105, hull: 10, score: 80,  colour: '#ffb020', xp: 8 },
+  bulwark: { radius: 24, speed: 55,  hull: 30, score: 150, colour: '#b06bff', xp: 15 },
+  boss:    { radius: 52, speed: 42,  hull: 350, score: 1000, colour: '#ff2e4d', xp: 100 },
 };
 
 export const WAVES = {
-  baseCount: 8,      // drones in wave 1, before the per-wave growth
-  perWave: 3,        // extra drones each later wave
-  spawnGap: 0.4,     // seconds between spawns inside a wave
+  baseCount: 14,     // drones in wave 1, before the per-wave growth
+  perWave: 5,        // extra drones each later wave
+  spawnGap: 0.30,    // seconds between spawns inside a wave
   clearBonus: 250,   // points times the wave number on a clear
   bossEvery: 5,      // a boss wave every 5th wave
+  clusterSize: 4,    // drones spawned from one shared anchor point
 };
 
 export const COMBO = { window: 3.0, step: 1, cap: 8 };
-export const CORE = { radius: 7, value: 25, magnet: 110, dropChance: 0.6 };
+export const CORE = { radius: 7, value: 25, magnet: 110, dropChance: 0.6, xp: 2 };
+
+// Level-up draft: kill XP + core XP fill the bar; each level offers a
+// pick-1-of-3 upgrade card. xpNext grows 40 / 70 / 100 / ...
+export const XP = { baseNext: 40, perLevel: 30 };
+
+// The upgrade pool for the level-up draft. `max` is how many times one
+// upgrade can be taken; `apply` is described in world.js (levels live on
+// state.upgrades so the draft, the HUD and the renderer all read one place).
+export const UPGRADES = {
+  rapid:  { name: 'RAPID FIRE',  max: 5, desc: 'Fire 15% faster',            short: 'RAPID' },
+  spread: { name: 'SPREAD SHOT', max: 3, desc: '+1 bullet stream, wider arc', short: 'SPREAD' },
+  aegis:  { name: 'AEGIS SHIELD', max: 3, desc: '+1 max hull and repair 1',   short: 'AEGIS' },
+  magnet: { name: 'CORE MAGNET', max: 3, desc: 'Cores fly to you from 50% further', short: 'MAGNET' },
+  nova:   { name: 'NOVA BURST',  max: 3, desc: 'A shockwave blasts nearby drones', short: 'NOVA' },
+};
+export const UPGRADE_ORDER = ['rapid', 'spread', 'aegis', 'magnet', 'nova'];
+export const NOVA = { radius: 240, damage: 15, baseGap: 6.0, gapPerLevel: 0.7, minGap: 3.5 };
+
+// Arena props: wrecked hull plates and asteroids. Visual anchors only —
+// they never collide — so the arena reads as a place, not a void.
+export const PROPS = { count: 7 };
 
 export const PALETTE = {
   bgTop: '#0a0618',

@@ -21,6 +21,23 @@ Chain kills to raise your combo multiplier (up to x8); cores are worth more
 while the combo is alive. You have 3 hull. There is no continue — how many
 waves can you hold?
 
+## Level up
+
+Kills and cores grant XP. Fill the bar and the fight freezes for a
+pick-1-of-3 upgrade draft — press **1**, **2** or **3**, or click a card:
+
+- **Rapid Fire** — fire 15% faster (up to 5 times)
+- **Spread Shot** — +1 bullet stream, wider arc (up to 3 times)
+- **Aegis Shield** — +1 max hull and repair 1 (up to 3 times)
+- **Core Magnet** — cores fly to you from 50% further (up to 3 times)
+- **Nova Burst** — a shockwave blasts nearby drones every few seconds (up to 3 times)
+
+Bullets deal 5 damage (12% crit for 10); every hit floats a damage number
+off the drone, and hits flash the hull white. Drones arrive in packs —
+clustered spawns, two at a time from wave 5 — among wreck props under a
+parallax nebula. The title screen plays a wave-6 demo behind the title,
+so the arena is already fighting before you launch.
+
 ## Play it locally
 
 ```
