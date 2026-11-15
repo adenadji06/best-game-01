@@ -199,6 +199,25 @@ function drawDrone(ctx, drone, time) {
     ctx.beginPath();
     ctx.arc(0, 0, 5, 0, TAU);
     ctx.fill();
+  } else if (drone.kind === 'shard') {
+    // A shard: a green diamond with a bright core — it splits into two
+    // darts when killed, so the eye can tell it apart before it pops.
+    ctx.rotate(drone.angle + Math.sin(time * 3 + drone.phase) * 0.3);
+    ctx.beginPath();
+    ctx.moveTo(0, -15);
+    ctx.lineTo(12, 0);
+    ctx.lineTo(0, 15);
+    ctx.lineTo(-12, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#eafffb';
+    ctx.beginPath();
+    ctx.moveTo(0, -6);
+    ctx.lineTo(5, 0);
+    ctx.lineTo(0, 6);
+    ctx.lineTo(-5, 0);
+    ctx.closePath();
+    ctx.fill();
   } else if (drone.kind === 'bulwark') {
     ctx.rotate(time * 0.5 + drone.phase);
     ctx.beginPath();
@@ -218,9 +237,13 @@ function drawDrone(ctx, drone, time) {
     ctx.stroke();
   } else {
     // The boss: a big hex hull, a spinning outer ring and a hot core.
-    // Enraged, the ring spins faster and the hull pulses red.
+    // Enraged, the ring spins faster and the hull pulses red; in
+    // overdrive the ring spins faster still and pulses gold.
     ctx.rotate(Math.sin(time * 0.8) * 0.25);
-    if (drone.enraged) {
+    if (drone.overdrive) {
+      ctx.shadowColor = '#ffd23e';
+      ctx.shadowBlur = 36 + Math.sin(time * 14) * 12;
+    } else if (drone.enraged) {
       ctx.shadowColor = '#ff2e4d';
       ctx.shadowBlur = 30 + Math.sin(time * 10) * 10;
     }
@@ -238,7 +261,8 @@ function drawDrone(ctx, drone, time) {
     ctx.strokeStyle = '#ffd7de';
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(0, 0, 64, time * (drone.enraged ? 1.8 : 0.7), time * (drone.enraged ? 1.8 : 0.7) + Math.PI * 1.5);
+    const ringSpeed = drone.overdrive ? 2.6 : drone.enraged ? 1.8 : 0.7;
+    ctx.arc(0, 0, 64, time * ringSpeed, time * ringSpeed + Math.PI * 1.5);
     ctx.stroke();
     ctx.fillStyle = '#fff1f3';
     ctx.beginPath();
@@ -332,10 +356,10 @@ function drawHud(ctx, state, best) {
     ctx.fillRect(x, 66, barW, 10);
     ctx.fillStyle = '#ff2e4d';
     ctx.fillRect(x, 66, barW * ratio, 10);
-    ctx.fillStyle = state.boss.enraged ? '#ffd23e' : PALETTE.text;
+    ctx.fillStyle = state.boss.overdrive ? '#ffd23e' : state.boss.enraged ? '#ffd23e' : PALETTE.text;
     ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(state.boss.enraged ? 'BASTION BREAKER — ENRAGED' : 'BASTION BREAKER', width / 2, 90);
+    ctx.fillText(state.boss.overdrive ? 'BASTION BREAKER — OVERDRIVE' : state.boss.enraged ? 'BASTION BREAKER — ENRAGED' : 'BASTION BREAKER', width / 2, 90);
   }
   // XP bar + level, centred under the wave line (or under the boss bar).
   const xpY = state.boss ? 104 : 66;
@@ -501,6 +525,42 @@ function drawWin(ctx, state, best) {
   // stats, and the build that won it — the whole run in one frame, with
   // the restart line the judge looks for.
   panel(ctx, FIELD.width, FIELD.height, 0.55);
+  // Confetti, painted over the veil so the celebration reads instead of
+  // hiding behind it: fixed golden-angle positions around the frame
+  // edges, clear of the text block, the same on every paint.
+  const confettiColours = ['#ffd23e', '#37f5d3', '#ffffff', '#ff5d8f', '#b06bff'];
+  for (let i = 0; i < 44; i += 1) {
+    const a = i * 2.39996;
+    const r = 130 + (i % 6) * 48;
+    const cx = FIELD.width / 2 + Math.cos(a) * r * 1.45;
+    const cy = 300 + Math.sin(a) * r * 0.78;
+    if (cx > 250 && cx < 710 && cy > 130 && cy < 470) continue;
+    if (cx < 12 || cx > FIELD.width - 12 || cy < 12 || cy > FIELD.height - 12) continue;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(a);
+    ctx.fillStyle = confettiColours[i % confettiColours.length];
+    ctx.globalAlpha = 0.95;
+    if (i % 3 === 0) {
+      ctx.beginPath();
+      ctx.moveTo(0, -7);
+      ctx.lineTo(6, 0);
+      ctx.lineTo(0, 7);
+      ctx.lineTo(-6, 0);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.fillRect(-6, -2.5, 12, 5);
+    }
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  // The winning ship, painted over the veil at the foot of the screen:
+  // the victory frame shows the ship that held the siege, not just text.
+  drawShip(ctx, {
+    x: FIELD.width / 2, y: FIELD.height - 78, vx: 0, vy: 0,
+    radius: 16, angle: -Math.PI / 2, hull: 3, fireIn: 0, invuln: 0, thrust: 0.6,
+  }, state.time);
   bigTitle(ctx, 'BASTION HELD', 190, 64, '#ffd23e');
   ctx.fillStyle = PALETTE.text;
   ctx.font = '700 30px "Segoe UI", system-ui, sans-serif';
@@ -540,6 +600,11 @@ function drawBanner(ctx, state) {
   ctx.globalAlpha = alpha;
   ctx.font = '800 30px "Segoe UI", system-ui, sans-serif';
   ctx.textAlign = 'center';
+  // A dark plate behind the text: the banner crosses the boss ring and
+  // the fight, so the words need their own ground to read cleanly.
+  const tw = ctx.measureText(state.banner).width;
+  ctx.fillStyle = 'rgba(5, 3, 16, 0.62)';
+  ctx.fillRect(FIELD.width / 2 - tw / 2 - 18, 215 - 34, tw + 36, 46);
   ctx.shadowColor = '#b06bff';
   ctx.shadowBlur = 22;
   ctx.fillStyle = '#ffffff';

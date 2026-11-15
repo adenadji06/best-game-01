@@ -7,16 +7,19 @@
 // The four shots are the whole loop in order, each staged at peak density:
 // 'start' is a dense wave-8 fight with no overlay — the cover is gameplay,
 // not a title card. 'play' is the title over a live wave-8 fight. 'boss'
-// is the wave-15 boss enraged, rings firing, escort pack around it. 'over'
-// is the victory screen: BASTION HELD, with the final stats and the build
-// that won it. One staged best score (29,650) is shared by all four, and
-// the victory score beats it, so the numbers read coherently across the
-// sheet: best 29,650 in the first three frames, a new best on the last.
+// is the wave-15 boss in overdrive (phase 3), spiral firing, escort pack
+// around it. 'over' is the victory screen: BASTION HELD, with the final
+// stats, the build that won it, and confetti over a clean arena. One staged
+// best score (29,650) is shared by all four, and the victory score beats
+// it, so the numbers read coherently across the sheet: best 29,650 in the
+// first three frames, a new best on the last.
 //
 // The shots are staged at peak density on purpose: wave 8+ with clustered
-// spawns, so the frame shows a full fight — 15+ drones, damage numbers,
-// particles, the XP bar, the wave pips and the owned-upgrade chips — never
-// an empty arena.
+// spawns from mid-arena anchors, so the frame shows a full fight — 15+
+// drones spread across the arena, damage numbers, particles, the XP bar,
+// the wave pips and the owned-upgrade chips — never an empty arena. The
+// richest-frame picker weighs arena coverage (which 3x2 cells hold drones)
+// as well as counts, so a pack in one corner never wins the cover.
 import { FIELD, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WIN, STEP, WIN_WAVE, XP } from './config.js';
 import { EVENT_OVER } from './world.js';
 
@@ -118,8 +121,11 @@ function runFor(world, seconds, pilot) {
  * Drones weigh heaviest: a kill-burst frame full of particles but empty of
  * enemies is not the fight. A death restores the busiest frame, not the
  * corpse — the shot is the battle, not the ending.
+ *
+ * `minDrones` refuses thin frames: a boss shot with the escort already
+ * dead is not the boss fight, however many particles it has.
  */
-function runRichest(world, seconds, pilot) {
+function runRichest(world, seconds, pilot, minDrones = 0) {
   const CHECK_EVERY = 0.25;
   let best = null;
   let bestScore = -1;
@@ -140,6 +146,7 @@ function runRichest(world, seconds, pilot) {
     // richest frame must be a mid-fight frame, 2 s in or later.
     if (elapsed < 2.0) continue;
     const s = world.state;
+    if (s.drones.length < minDrones) continue;
     // Richest = most happening, spread across the arena, ship in frame:
     // a kill-burst in one corner is not the fight, and a ship half off
     // the edge is not a cover.
@@ -147,11 +154,15 @@ function runRichest(world, seconds, pilot) {
     let maxX = -Infinity;
     let minY = Infinity;
     let maxY = -Infinity;
+    // Quadrant coverage: drones in how many of the 3x2 arena cells?
+    // A pack in one corner scores less than a fight across the frame.
+    const cells = new Set();
     for (const d of s.drones) {
       minX = Math.min(minX, d.x);
       maxX = Math.max(maxX, d.x);
       minY = Math.min(minY, d.y);
       maxY = Math.max(maxY, d.y);
+      cells.add(`${Math.min(2, Math.floor(d.x / 320))},${Math.min(1, Math.floor(d.y / 300))}`);
     }
     const spread = s.drones.length > 1 ? (maxX - minX + maxY - minY) / 40 : 0;
     const centred = s.ship.x > 200 && s.ship.x < 760 && s.ship.y > 120 && s.ship.y < 480 ? 15 : 0;
@@ -159,10 +170,11 @@ function runRichest(world, seconds, pilot) {
     // prove the fight happened instead of just spawning.
     const progress = s.kills * 3 + s.level * 5
       + Object.values(s.upgrades).reduce((a, b) => a + b, 0) * 5;
-    const richness = s.drones.length * 6 + s.bullets.length * 2 + s.cores.length * 2
+    const richness = s.drones.length * 6 + s.bullets.length * 3 + s.cores.length * 2
       + Math.min(s.particles.length, 50) + s.popups.length * 5
       + s.drones.filter((d) => d.elite).length * 10 + (s.boss && s.boss.enraged ? 20 : 0)
-      + spread + centred + progress;
+      + (s.boss && s.boss.overdrive ? 25 : 0)
+      + cells.size * 8 + spread + centred + progress;
     if (richness > bestScore) {
       bestScore = richness;
       best = world.snapshot();
@@ -188,10 +200,11 @@ export function stageShot(name, world) {
   }
   if (name === 'boss') {
     // Wave 15 is a boss wave: the Breaker plus its escort, pack spawned,
-    // richest frame — then the boss is brought to its enraged second
-    // phase, a state the fight genuinely reaches below half hull. A short
-    // real run first earns the level and upgrades the HUD shows, so the
-    // boss frame carries the progression too.
+    // richest frame with at least 8 drones alive — then the boss is
+    // brought to its overdrive third phase, a state the fight genuinely
+    // reaches below a quarter hull. A short real run first earns the level
+    // and upgrades the HUD shows, so the boss frame carries the
+    // progression too.
     world.startWave(6);
     runFor(world, 12, autopilot);
     if (world.state.over) world.reset();
@@ -205,15 +218,16 @@ export function stageShot(name, world) {
       world.state.popups = [];
       world.startWave(WIN_WAVE);
       world.spawnAll();
-      runRichest(world, BOSS_SECONDS, autopilot);
+      runRichest(world, BOSS_SECONDS, autopilot, 8);
       const boss = world.state.boss;
       if (boss && !world.state.over) {
-        if (boss.hull > boss.maxHull / 2) {
-          boss.hull = Math.floor(boss.maxHull * 0.42);
+        if (!boss.overdrive) {
+          boss.hull = Math.floor(boss.maxHull * 0.2);
           boss.enraged = true;
-          world.state.banner = 'BASTION BREAKER ENRAGED';
+          boss.overdrive = true;
+          world.state.banner = 'BASTION BREAKER OVERDRIVE';
           world.state.bannerIn = 2.2;
-          world.burst(boss.x, boss.y, '#ff2e4d', 40, 380);
+          world.burst(boss.x, boss.y, '#ffd23e', 60, 460);
         }
         return { screen: SCREEN_PLAY, best: STAGED_BEST };
       }
@@ -239,10 +253,26 @@ export function stageShot(name, world) {
     }
     s.banner = 'BASTION HELD — SIEGE BROKEN';
     s.bannerIn = 3.0;
-    // Clear floating popups: a half-clipped damage number at the field
-    // edge would read as a glitch on the victory screen.
+    // A clean victory frame: no drones left to overlap each other into
+    // glitch-looking shapes at the edges, no stray bullets or cores, no
+    // half-clipped damage numbers. The ship flies centre-frame with a
+    // fresh gold burst, and celebration bursts ring the field — the win
+    // screen is a celebration, not an empty arena with text on it.
+    s.drones = [];
+    s.enemyBullets = [];
+    s.bullets = [];
+    s.cores = [];
     s.popups = [];
+    s.ship.x = FIELD.width / 2;
+    s.ship.y = FIELD.height - 78;
+    s.ship.vx = 0;
+    s.ship.vy = 0;
+    s.ship.angle = -Math.PI / 2;
     world.burst(s.ship.x, s.ship.y, '#ffd23e', 70, 420);
+    for (const [bx, by, colour] of [
+      [140, 120, '#37f5d3'], [820, 110, '#ff5d8f'], [120, 480, '#b06bff'],
+      [840, 470, '#ffd23e'], [480, 90, '#ffffff'], [240, 300, '#58e06d'],
+    ]) world.burst(bx, by, colour, 26, 300);
     return { screen: SCREEN_WIN, best: STAGED_BEST };
   }
   // The cover: a dense wave-8 fight with no overlay — the first frame the

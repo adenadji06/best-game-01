@@ -7,10 +7,29 @@
 // draft (pick 1 of 3 upgrades) and pauses the fight until the player picks.
 // Upgrades live on state.upgrades as plain levels, so the draft, the HUD
 // and the renderer all read the same numbers.
+//
+// The siege is a campaign, not a counter: named waves change the mix
+// (SHARD STORM at 6, SWARM SURGE at 8, ELITE HUNT at 12), shards split
+// into two darts when killed, and the Bastion Breaker fights in three
+// phases — ring fire, enrage below half hull, spiral overdrive below a
+// quarter — so every wave reads differently in a screenshot.
 import {
-  BULLET, COMBO, CORE, DRONES, ELITE, FIELD, NOVA, PALETTE, PLAYER, PROPS, STEP,
-  UPGRADE_ORDER, UPGRADES, WAVES, WIN_WAVE, XP,
+  BOSS_PHASES, BULLET, COMBO, CORE, DRONES, ELITE, FIELD, NOVA, PALETTE, PLAYER, PROPS,
+  SHARD_FROM_WAVE, STEP, UPGRADE_ORDER, UPGRADES, WAVE_EVENTS, WAVES, WIN_WAVE, XP,
 } from './config.js';
+
+// The named event for a wave, if any: its banner name, its elite chance
+// and whether shards have joined the roster yet. Plain waves get the
+// defaults (no name, base elite chance, shards only from wave 6).
+export function waveEvent(wave) {
+  const event = WAVE_EVENTS[wave];
+  return {
+    name: event ? event.name : null,
+    eliteChance: event ? event.eliteChance : ELITE.chance,
+    extraDarts: event ? event.extraDarts : 0,
+    shards: wave >= SHARD_FROM_WAVE,
+  };
+}
 
 export const EVENT_HIT = 1;
 export const EVENT_KILL = 2;
@@ -49,39 +68,64 @@ function edgeSpawn(random) {
 
 function waveRoster(random, wave) {
   const roster = [];
+  const event = waveEvent(wave);
   const isBoss = wave % WAVES.bossEvery === 0;
   if (isBoss) {
     roster.push({ kind: 'boss', elite: false });
     // A boss wave brings a real escort, not a token pair of darts.
     for (let i = 0; i < 10 + Math.floor(wave / WAVES.bossEvery); i += 1) {
-      roster.push({ kind: random.next() < 0.5 ? 'dart' : 'weaver', elite: rollElite(random, wave) });
+      roster.push({ kind: random.next() < 0.5 ? 'dart' : 'weaver', elite: rollElite(random, wave, event.eliteChance) });
     }
     return roster;
   }
-  const count = WAVES.baseCount + (wave - 1) * WAVES.perWave;
+  const count = WAVES.baseCount + (wave - 1) * WAVES.perWave + event.extraDarts;
   for (let i = 0; i < count; i += 1) {
     const roll = random.next();
-    const kind = wave >= 3 && roll < 0.18 ? 'bulwark' : roll < 0.45 ? 'weaver' : 'dart';
-    roster.push({ kind, elite: rollElite(random, wave) });
+    let kind;
+    // Shards take the first 12% of the roll; the old mix (bulwark 18%,
+    // weaver 27%, dart the rest) keeps its proportions after them, and
+    // waves before the shards arrive keep the exact old thresholds.
+    if (event.shards && roll < 0.12) kind = 'shard';
+    else if (wave >= 3 && roll < (event.shards ? 0.30 : 0.18)) kind = 'bulwark';
+    else if (roll < (event.shards ? 0.57 : 0.45)) kind = 'weaver';
+    else kind = 'dart';
+    roster.push({ kind, elite: rollElite(random, wave, event.eliteChance) });
   }
   return roster;
 }
 
 // An elite drone: same kind, gold-ringed, three times the hull and score.
 // Rolled per drone from wave 4, so a later wave always has a few.
-function rollElite(random, wave) {
-  return wave >= ELITE.fromWave && random.next() < ELITE.chance;
+function rollElite(random, wave, chance = ELITE.chance) {
+  return wave >= ELITE.fromWave && random.next() < chance;
 }
 
 // Drones spawn in clusters of up to clusterSize from one shared anchor,
 // so the arena fills with packs instead of a thin trickle from all sides.
-function clusterAnchors(random, roster) {
+// Half the anchors sit mid-arena instead of on the edges, so packs form
+// across the whole field — the fight spreads out instead of hugging one
+// corner behind the ship. An interior anchor is never dropped on top of
+// the ship: it is resampled until it sits clear of the player, so the
+// density never becomes a cheap contact hit.
+function clusterAnchors(random, roster, ship) {
   const anchors = [];
   let left = 0;
   let anchor = null;
   for (let i = 0; i < roster.length; i += 1) {
     if (left <= 0) {
-      anchor = edgeSpawn(random);
+      if (random.next() < 0.5) {
+        anchor = null;
+        for (let tries = 0; tries < 4 && !anchor; tries += 1) {
+          const at = {
+            x: random.range(FIELD.width * 0.2, FIELD.width * 0.8),
+            y: random.range(FIELD.height * 0.15, FIELD.height * 0.8),
+          };
+          if (!ship || Math.hypot(at.x - ship.x, at.y - ship.y) >= 220) anchor = at;
+        }
+        if (!anchor) anchor = edgeSpawn(random);
+      } else {
+        anchor = edgeSpawn(random);
+      }
       left = WAVES.clusterSize;
     }
     anchors.push(anchor);
@@ -171,10 +215,13 @@ export function createWorld(random) {
   function startWave(wave) {
     state.wave = wave;
     state.spawnQueue = waveRoster(random, wave);
-    state.spawnAnchors = clusterAnchors(random, state.spawnQueue);
+    state.spawnAnchors = clusterAnchors(random, state.spawnQueue, state.ship);
     state.spawnIn = 0.6;
     const isBoss = wave % WAVES.bossEvery === 0;
-    state.banner = isBoss ? `WAVE ${wave} — BASTION BREAKER INBOUND` : `WAVE ${wave}`;
+    const event = waveEvent(wave);
+    state.banner = isBoss
+      ? `WAVE ${wave} — BASTION BREAKER INBOUND`
+      : event.name ? `WAVE ${wave} — ${event.name}` : `WAVE ${wave}`;
     state.bannerIn = 2.2;
     if (isBoss) return EVENT_BOSS;
     return 0;
@@ -196,6 +243,8 @@ export function createWorld(random) {
       kind,
       elite,
       enraged: false,
+      overdrive: false,
+      spiralAngle: 0,
       x: at.x,
       y: at.y,
       vx: 0,
@@ -268,6 +317,33 @@ export function createWorld(random) {
     if (drone.kind === 'boss') {
       state.boss = null;
       burst(drone.x, drone.y, '#ffffff', 40, 380);
+    }
+    // A shard splits into two darts where it died — the pack fights on
+    // after the first kill, so clearing a wave never goes quiet.
+    if (drone.kind === 'shard') {
+      for (let i = 0; i < 2; i += 1) {
+        const dart = {
+          kind: 'dart',
+          elite: false,
+          enraged: false,
+          overdrive: false,
+          spiralAngle: 0,
+          x: drone.x + random.range(-16, 16),
+          y: drone.y + random.range(-16, 16),
+          vx: random.range(-60, 60),
+          vy: random.range(-60, 60),
+          radius: DRONES.dart.radius,
+          hull: DRONES.dart.hull,
+          maxHull: DRONES.dart.hull,
+          speed: DRONES.dart.speed,
+          phase: random.next() * TAU,
+          fireIn: random.range(1.5, 3.5),
+          angle: 0,
+          flash: 0,
+        };
+        state.drones.push(dart);
+      }
+      popup(drone.x, drone.y + drone.radius + 12, 'SPLIT!', DRONES.shard.colour, 13);
     }
     if (random.next() < CORE.dropChance || drone.kind === 'boss' || drone.elite) {
       const n = drone.kind === 'boss' ? 5 : drone.elite ? ELITE.coreDrop : 1;
@@ -394,22 +470,30 @@ export function createWorld(random) {
         drone.vx = (dx / dist) * drone.speed;
         drone.vy = (dy / dist) * drone.speed;
       } else {
-        // The boss holds the upper arena, strafes, and fires rings.
-        // Below half hull it enrages: faster rings, faster strafe, and a
-        // banner, so the fight visibly turns in its second phase.
-        if (!drone.enraged && drone.hull < drone.maxHull / 2) {
+        // The boss holds the upper arena, strafes, and fires rings — in
+        // three phases. Below half hull it enrages (phase 2: faster rings,
+        // faster strafe, banner). Below a quarter it goes into overdrive
+        // (phase 3: a rotating spiral fan on top of the ring, double
+        // strafe), so the fight visibly turns twice before the kill.
+        if (!drone.enraged && drone.hull < drone.maxHull * BOSS_PHASES.enrageBelow) {
           drone.enraged = true;
           state.banner = 'BASTION BREAKER ENRAGED';
           state.bannerIn = 2.2;
           burst(drone.x, drone.y, '#ff2e4d', 40, 380);
         }
-        const strafe = drone.enraged ? 1.5 : 1;
+        if (!drone.overdrive && drone.hull < drone.maxHull * BOSS_PHASES.overdriveBelow) {
+          drone.overdrive = true;
+          state.banner = 'BASTION BREAKER OVERDRIVE';
+          state.bannerIn = 2.2;
+          burst(drone.x, drone.y, '#ffd23e', 60, 460);
+        }
+        const strafe = drone.overdrive ? 2 : drone.enraged ? 1.5 : 1;
         const targetX = FIELD.width / 2 + Math.sin(state.time * 0.6 * strafe) * 260;
         drone.vx = (targetX - drone.x) * 0.9 * strafe;
         drone.vy = (150 - drone.y) * 0.9;
         drone.fireIn -= dt;
         if (drone.fireIn <= 0) {
-          drone.fireIn = Math.max(1.1, 2.4 - state.wave * 0.06) * (drone.enraged ? 0.6 : 1);
+          drone.fireIn = Math.max(1.1, 2.4 - state.wave * 0.06) * (drone.overdrive ? 0.45 : drone.enraged ? 0.6 : 1);
           const shots = 10 + Math.floor(state.wave / 2);
           for (let i = 0; i < shots; i += 1) {
             const a = (i / shots) * TAU + state.time;
@@ -421,6 +505,22 @@ export function createWorld(random) {
               radius: BULLET.enemyRadius,
               life: 4,
             });
+          }
+          // Overdrive spiral: a three-bullet fan that rotates a little
+          // with every volley, so the bullet pattern itself turns.
+          if (drone.overdrive) {
+            drone.spiralAngle += 0.55;
+            for (let i = -1; i <= 1; i += 1) {
+              const a = drone.spiralAngle + i * 0.22;
+              state.enemyBullets.push({
+                x: drone.x,
+                y: drone.y,
+                vx: Math.cos(a) * BULLET.enemySpeed * 1.15,
+                vy: Math.sin(a) * BULLET.enemySpeed * 1.15,
+                radius: BULLET.enemyRadius,
+                life: 4,
+              });
+            }
           }
         }
       }

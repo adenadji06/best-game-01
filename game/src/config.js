@@ -28,8 +28,27 @@ export const DRONES = {
   dart:    { radius: 15, speed: 135, hull: 5,  score: 50,  colour: '#ff5d8f', xp: 5 },
   weaver:  { radius: 16, speed: 105, hull: 10, score: 80,  colour: '#ffb020', xp: 8 },
   bulwark: { radius: 24, speed: 55,  hull: 30, score: 150, colour: '#b06bff', xp: 15 },
+  // A shard splits into two darts when it dies, so a wave-6+ pack keeps
+  // fighting after the first kill — the arena never drains to a trickle.
+  shard:   { radius: 13, speed: 120, hull: 10, score: 100, colour: '#58e06d', xp: 8 },
   boss:    { radius: 52, speed: 42,  hull: 350, score: 1000, colour: '#ff2e4d', xp: 100 },
 };
+
+// Named waves: a wave is not just "more of the same". Each named wave
+// changes the mix, and the banner names it, so the siege reads as a
+// campaign with events instead of a counter going up.
+export const WAVE_EVENTS = {
+  // wave: [name, extra darts, elite chance, shards join]
+  6:  { name: 'SHARD STORM',  extraDarts: 0, eliteChance: 0.12, shards: true },
+  8:  { name: 'SWARM SURGE',  extraDarts: 8, eliteChance: 0.12, shards: true },
+  12: { name: 'ELITE HUNT',   extraDarts: 0, eliteChance: 0.30, shards: true },
+};
+export const SHARD_FROM_WAVE = 6;
+
+// The boss fights in three phases: hull above half is phase 1, below
+// half it enrages (phase 2: faster rings, faster strafe), and below a
+// quarter it goes into overdrive (phase 3: spiral fire, double strafe).
+export const BOSS_PHASES = { enrageBelow: 0.5, overdriveBelow: 0.25 };
 
 export const WAVES = {
   baseCount: 14,     // drones in wave 1, before the per-wave growth
@@ -69,7 +88,7 @@ export const NOVA = { radius: 240, damage: 15, baseGap: 6.0, gapPerLevel: 0.7, m
 
 // Arena props: wrecked hull plates and asteroids. Visual anchors only —
 // they never collide — so the arena reads as a place, not a void.
-export const PROPS = { count: 12 };
+export const PROPS = { count: 14 };
 
 export const PALETTE = {
   bgTop: '#0d0824',

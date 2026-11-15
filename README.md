@@ -22,8 +22,19 @@ Chain kills to raise your combo multiplier (up to x8); cores are worth more
 while the combo is alive. You have 3 hull. There is no continue — hold all
 15 waves to win, or the Bastion falls. Gold-ringed **elite drones** (from
 wave 4) are worth triple score and drop three cores; a boss below half hull
-**enrages** and fires faster. The HUD shows the 15 wave pips, so the goal
-is always in sight.
+**enrages** and fires faster.
+
+## The siege is a campaign, not a counter
+
+- **Shards** (from wave 6) — green diamonds that split into two darts when
+  killed, so a wave never goes quiet after the first kill.
+- **Named waves** — wave 6 is a **SHARD STORM**, wave 8 a **SWARM SURGE**
+  (+8 darts), wave 12 an **ELITE HUNT** (elites three times as likely). The
+  banner names each one, and the mix changes with it.
+- **Boss phases** — the Bastion Breaker fights in three phases: ring fire,
+  **enrage** below half hull (faster rings, faster strafe), and **overdrive**
+  below a quarter hull (a rotating spiral fan on top of the ring, double
+  strafe). The HUD boss bar names the phase live.
 
 ## Level up
 
@@ -59,5 +70,5 @@ every file the game loads sits under `game/`.
   file (`config`, `world`, `render`, `input`, `audio`, `shots`, `main`).
 - `vendor/makefun-game.ts` — the kit's dossier library, unchanged.
 - `screenshots/` — four renders of the game itself: a dense wave-8 fight
-  (the cover), the title over a live fight, the wave-15 boss enraged, and
-  the victory screen.
+  (the cover), the title over a live fight, the wave-15 boss in overdrive,
+  and the victory screen.
