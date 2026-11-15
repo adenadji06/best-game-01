@@ -1,17 +1,20 @@
 // NEON BASTION — boot and the one loop: input is read every frame, the
 // world advances in fixed 1/60 s steps (several in a slow frame, none in a
 // fast one), and the renderer paints what is there. The game moves between
-// four screens: title, play, paused and game over.
+// five screens: title, play, paused, game over, and victory — clear wave
+// 15 and the siege breaks.
 //
 // ?seed=N fixes the drone pattern. ?shot=start|play|boss|over (with
 // &seed=N) stages that scene instead of running the loop, paints it twice
-// and sets window.__shotReady for a screenshot.
+// and sets window.__shotReady for a screenshot. The shots are the loop in
+// order: a dense wave-8 fight, the title over a live fight, the wave-15
+// boss enraged, and the victory screen.
 //
-// The title screen is an attract mode: an autopilot plays a wave-6 demo
+// The title screen is an attract mode: an autopilot plays a wave-8 demo
 // behind the title text, so the cover frame is a live fight, not a void.
 // A level-up draft freezes the fight until the player picks a card with
 // keys 1/2/3 or a click on the card.
-import { BEST_KEY, FIELD, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE, STEP } from './config.js';
+import { BEST_KEY, FIELD, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WIN, STEP } from './config.js';
 import { createRandom } from './random.js';
 import { createWorld, EVENT_BOSS, EVENT_CLEAR, EVENT_CORE, EVENT_HIT, EVENT_KILL, EVENT_LEVEL, EVENT_NOVA, EVENT_SHOT } from './world.js';
 import { ACTION_CONFIRM, ACTION_PAUSE, ACTION_RESTART, createInput } from './input.js';
@@ -62,6 +65,7 @@ function describe() {
   const state = world.state;
   if (screen === SCREEN_TITLE) return 'Neon Bastion. Title screen. Press Enter to launch.';
   if (screen === SCREEN_PAUSED) return 'Paused.';
+  if (screen === SCREEN_WIN) return `Victory. You held all 15 waves. Score ${state.score}. Best ${best}. Press R to fly again.`;
   if (screen === SCREEN_OVER) return `Game over. Score ${state.score}. Best ${best}. Press R to fly again.`;
   if (state.draft) return `Level ${state.level}. Choose an upgrade: press 1, 2 or 3.`;
   return `Wave ${Math.max(1, state.wave)}. Score ${state.score}. Hull ${state.ship.hull} of ${state.maxHull}. Level ${state.level}. Combo times ${Math.max(1, state.combo)}.`;
@@ -82,7 +86,7 @@ function startGame() {
 // The attract-mode demo: the autopilot flies wave 6 behind the title.
 // A finished demo restarts itself, so the title never goes quiet.
 function stepDemo(dt) {
-  if (world.state.wave === 0 || world.state.over) {
+  if (world.state.wave === 0 || world.state.over || world.state.won) {
     world.reset();
     world.startWave(DEMO_WAVE);
   }
@@ -111,6 +115,14 @@ function handleEvents(events) {
   if (events & EVENT_LEVEL) audio.clear();
   if (events & EVENT_NOVA) audio.kill();
   if (world.state.draft) announce();
+  if (world.state.won) {
+    screen = SCREEN_WIN;
+    if (world.state.score > best) {
+      best = world.state.score;
+      saveBest();
+    }
+    announce();
+  }
   if (world.state.over) {
     screen = SCREEN_OVER;
     if (world.state.score > best) {
@@ -144,6 +156,7 @@ function frame(now) {
   }
   if (screen === SCREEN_TITLE && actions.has(ACTION_CONFIRM)) startGame();
   else if (screen === SCREEN_OVER && (actions.has(ACTION_RESTART) || actions.has(ACTION_CONFIRM))) startGame();
+  else if (screen === SCREEN_WIN && (actions.has(ACTION_RESTART) || actions.has(ACTION_CONFIRM))) startGame();
   else if (screen === SCREEN_PAUSED && actions.has(ACTION_RESTART)) startGame();
 
   if (screen === SCREEN_PLAY) {

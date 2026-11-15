@@ -4,6 +4,11 @@ export const FIELD = { width: 960, height: 600 };
 export const STEP = 1 / 60;
 export const BEST_KEY = 'neon-bastion-best';
 
+// The siege ends at wave 15: clear it and the Bastion holds — the game
+// has a win, not just a loss. The HUD shows the 15 wave pips so the goal
+// is visible in every frame.
+export const WIN_WAVE = 15;
+
 export const PLAYER = {
   radius: 16,
   speed: 360,
@@ -33,7 +38,14 @@ export const WAVES = {
   clearBonus: 250,   // points times the wave number on a clear
   bossEvery: 5,      // a boss wave every 5th wave
   clusterSize: 4,    // drones spawned from one shared anchor point
+  winBonus: 5000,    // points for holding the final wave
 };
+
+// Elites: from wave 4, a share of the pack spawns gold-ringed, three
+// times as tough and worth three times the score, dropping three cores.
+// One more thing for the eye to read at a glance, and one more reason a
+// wave is never just "more of the same".
+export const ELITE = { fromWave: 4, chance: 0.12, hullMul: 3, scoreMul: 3, coreDrop: 3, radiusBonus: 6 };
 
 export const COMBO = { window: 3.0, step: 1, cap: 8 };
 export const CORE = { radius: 7, value: 25, magnet: 110, dropChance: 0.6, xp: 2 };
@@ -57,12 +69,12 @@ export const NOVA = { radius: 240, damage: 15, baseGap: 6.0, gapPerLevel: 0.7, m
 
 // Arena props: wrecked hull plates and asteroids. Visual anchors only —
 // they never collide — so the arena reads as a place, not a void.
-export const PROPS = { count: 7 };
+export const PROPS = { count: 12 };
 
 export const PALETTE = {
-  bgTop: '#0a0618',
-  bgBottom: '#12082e',
-  grid: 'rgba(120, 90, 255, 0.07)',
+  bgTop: '#0d0824',
+  bgBottom: '#1a0e40',
+  grid: 'rgba(120, 90, 255, 0.15)',
   ship: '#37f5d3',
   shipCore: '#eafffb',
   bullet: '#8ef7ff',
@@ -71,9 +83,11 @@ export const PALETTE = {
   text: '#eef2ff',
   dim: '#9aa3c7',
   danger: '#ff4d6d',
+  gold: '#ffd23e',
 };
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
 export const SCREEN_PAUSED = 'paused';
 export const SCREEN_OVER = 'over';
+export const SCREEN_WIN = 'win';

@@ -8,8 +8,8 @@
 // Upgrades live on state.upgrades as plain levels, so the draft, the HUD
 // and the renderer all read the same numbers.
 import {
-  BULLET, COMBO, CORE, DRONES, FIELD, NOVA, PALETTE, PLAYER, STEP,
-  UPGRADE_ORDER, UPGRADES, WAVES, XP,
+  BULLET, COMBO, CORE, DRONES, ELITE, FIELD, NOVA, PALETTE, PLAYER, PROPS, STEP,
+  UPGRADE_ORDER, UPGRADES, WAVES, WIN_WAVE, XP,
 } from './config.js';
 
 export const EVENT_HIT = 1;
@@ -51,21 +51,26 @@ function waveRoster(random, wave) {
   const roster = [];
   const isBoss = wave % WAVES.bossEvery === 0;
   if (isBoss) {
-    roster.push('boss');
+    roster.push({ kind: 'boss', elite: false });
     // A boss wave brings a real escort, not a token pair of darts.
     for (let i = 0; i < 10 + Math.floor(wave / WAVES.bossEvery); i += 1) {
-      roster.push(random.next() < 0.5 ? 'dart' : 'weaver');
+      roster.push({ kind: random.next() < 0.5 ? 'dart' : 'weaver', elite: rollElite(random, wave) });
     }
     return roster;
   }
   const count = WAVES.baseCount + (wave - 1) * WAVES.perWave;
   for (let i = 0; i < count; i += 1) {
     const roll = random.next();
-    if (wave >= 3 && roll < 0.18) roster.push('bulwark');
-    else if (roll < 0.45) roster.push('weaver');
-    else roster.push('dart');
+    const kind = wave >= 3 && roll < 0.18 ? 'bulwark' : roll < 0.45 ? 'weaver' : 'dart';
+    roster.push({ kind, elite: rollElite(random, wave) });
   }
   return roster;
+}
+
+// An elite drone: same kind, gold-ringed, three times the hull and score.
+// Rolled per drone from wave 4, so a later wave always has a few.
+function rollElite(random, wave) {
+  return wave >= ELITE.fromWave && random.next() < ELITE.chance;
 }
 
 // Drones spawn in clusters of up to clusterSize from one shared anchor,
@@ -110,6 +115,7 @@ export function createWorld(random) {
     shake: 0,
     time: 0,
     over: false,
+    won: false, // set when the final wave clears: the siege is broken
     // Progression.
     xp: 0,
     level: 1,
@@ -119,7 +125,7 @@ export function createWorld(random) {
     draft: null, // null, or an array of 3 upgrade ids awaiting a pick
     novaIn: NOVA.baseGap,
   };
-  for (let i = 0; i < 90; i += 1) {
+  for (let i = 0; i < 130; i += 1) {
     state.stars.push({
       x: random.range(0, FIELD.width),
       y: random.range(0, FIELD.height),
@@ -128,7 +134,7 @@ export function createWorld(random) {
       speed: random.range(0.4, 1.6),
     });
   }
-  for (let i = 0; i < 7; i += 1) {
+  for (let i = 0; i < PROPS.count; i += 1) {
     // Keep props out of the ship's launch lane (centre bottom).
     const x = random.range(40, FIELD.width - 40);
     const y = random.range(40, FIELD.height - 160);
@@ -174,8 +180,10 @@ export function createWorld(random) {
     return 0;
   }
 
-  function spawnDrone(kind, anchor) {
-    const def = DRONES[kind];
+  function spawnDrone(entry, anchor) {
+    const def = DRONES[entry.kind];
+    const kind = entry.kind;
+    const elite = !!entry.elite;
     const at = anchor
       ? {
         x: Math.max(-30, Math.min(FIELD.width + 30, anchor.x + random.range(-46, 46))),
@@ -183,16 +191,19 @@ export function createWorld(random) {
       }
       : edgeSpawn(random);
     const hullBonus = Math.floor(state.wave / 4) * BULLET.damage;
+    const hull = (def.hull + hullBonus) * (elite ? ELITE.hullMul : 1);
     const drone = {
       kind,
+      elite,
+      enraged: false,
       x: at.x,
       y: at.y,
       vx: 0,
       vy: 0,
-      radius: def.radius,
-      hull: def.hull + hullBonus,
-      maxHull: def.hull + hullBonus,
-      speed: def.speed * (1 + state.wave * 0.02),
+      radius: def.radius + (elite ? ELITE.radiusBonus : 0),
+      hull,
+      maxHull: hull,
+      speed: def.speed * (1 + state.wave * 0.02) * (elite ? 0.9 : 1),
       phase: random.next() * TAU,
       fireIn: random.range(1.5, 3.5),
       angle: 0,
@@ -249,17 +260,17 @@ export function createWorld(random) {
     state.kills += 1;
     state.combo = Math.min(state.combo + COMBO.step, COMBO.cap);
     state.comboIn = COMBO.window;
-    const gained = def.score * Math.max(1, state.combo);
+    const gained = def.score * (drone.elite ? ELITE.scoreMul : 1) * Math.max(1, state.combo);
     state.score += gained;
-    popup(drone.x, drone.y - drone.radius, `+${gained}`, def.colour);
+    popup(drone.x, drone.y - drone.radius, drone.elite ? `ELITE +${gained}` : `+${gained}`, drone.elite ? PALETTE.gold : def.colour, drone.elite ? 18 : 15);
     burst(drone.x, drone.y, def.colour, drone.kind === 'boss' ? 80 : 26, 260);
     state.shake = Math.max(state.shake, drone.kind === 'boss' ? 0.5 : 0.12);
     if (drone.kind === 'boss') {
       state.boss = null;
       burst(drone.x, drone.y, '#ffffff', 40, 380);
     }
-    if (random.next() < CORE.dropChance || drone.kind === 'boss') {
-      const n = drone.kind === 'boss' ? 5 : 1;
+    if (random.next() < CORE.dropChance || drone.kind === 'boss' || drone.elite) {
+      const n = drone.kind === 'boss' ? 5 : drone.elite ? ELITE.coreDrop : 1;
       for (let i = 0; i < n; i += 1) {
         state.cores.push({
           x: drone.x + random.range(-14, 14),
@@ -384,12 +395,21 @@ export function createWorld(random) {
         drone.vy = (dy / dist) * drone.speed;
       } else {
         // The boss holds the upper arena, strafes, and fires rings.
-        const targetX = FIELD.width / 2 + Math.sin(state.time * 0.6) * 260;
-        drone.vx = (targetX - drone.x) * 0.9;
+        // Below half hull it enrages: faster rings, faster strafe, and a
+        // banner, so the fight visibly turns in its second phase.
+        if (!drone.enraged && drone.hull < drone.maxHull / 2) {
+          drone.enraged = true;
+          state.banner = 'BASTION BREAKER ENRAGED';
+          state.bannerIn = 2.2;
+          burst(drone.x, drone.y, '#ff2e4d', 40, 380);
+        }
+        const strafe = drone.enraged ? 1.5 : 1;
+        const targetX = FIELD.width / 2 + Math.sin(state.time * 0.6 * strafe) * 260;
+        drone.vx = (targetX - drone.x) * 0.9 * strafe;
         drone.vy = (150 - drone.y) * 0.9;
         drone.fireIn -= dt;
         if (drone.fireIn <= 0) {
-          drone.fireIn = Math.max(1.1, 2.4 - state.wave * 0.06);
+          drone.fireIn = Math.max(1.1, 2.4 - state.wave * 0.06) * (drone.enraged ? 0.6 : 1);
           const shots = 10 + Math.floor(state.wave / 2);
           for (let i = 0; i < shots; i += 1) {
             const a = (i / shots) * TAU + state.time;
@@ -449,7 +469,7 @@ export function createWorld(random) {
           drone.flash = 0.09;
           bullet.life = 0;
           burst(bullet.x, bullet.y, '#8ef7ff', 4, 140);
-          popup(bullet.x, bullet.y - 8, crit ? `${damage}!` : `${damage}`, crit ? '#ffe45e' : '#bfefff', crit ? 15 : 12);
+          popup(bullet.x, bullet.y - 8, crit ? `${damage}!` : `${damage}`, crit ? '#ffe45e' : '#bfefff', crit ? 19 : 14);
           if (drone.hull <= 0) events |= killDrone(drone);
           break;
         }
@@ -542,9 +562,9 @@ export function createWorld(random) {
   // point, `firing` whether the trigger is held. Returns an event bitmask.
   // While a level-up draft is open the fight is frozen: only particles move.
   function step(dt, move, aim, firing) {
-    if (state.over) {
+    if (state.over || state.won) {
       stepFx(dt);
-      return EVENT_OVER;
+      return state.won ? EVENT_CLEAR : EVENT_OVER;
     }
     if (state.draft) {
       stepFx(dt);
@@ -567,10 +587,20 @@ export function createWorld(random) {
     } else if (state.drones.length === 0 && state.wave > 0) {
       state.score += WAVES.clearBonus * state.wave;
       popup(FIELD.width / 2, FIELD.height / 2 - 40, `WAVE BONUS +${WAVES.clearBonus * state.wave}`, '#37f5d3');
-      state.banner = `WAVE ${state.wave} CLEAR`;
-      state.bannerIn = 2.0;
       events |= EVENT_CLEAR;
-      events |= startWave(state.wave + 1);
+      if (state.wave >= WIN_WAVE) {
+        // The siege is broken: the final wave cleared is the win. No
+        // next wave starts; the victory screen takes over from here.
+        state.won = true;
+        state.score += WAVES.winBonus;
+        state.banner = 'BASTION HELD — SIEGE BROKEN';
+        state.bannerIn = 3.0;
+        burst(state.ship.x, state.ship.y, '#ffd23e', 70, 420);
+      } else {
+        state.banner = `WAVE ${state.wave} CLEAR`;
+        state.bannerIn = 2.0;
+        events |= startWave(state.wave + 1);
+      }
     }
     stepDrones(dt);
     events |= stepBullets(dt);
@@ -604,6 +634,7 @@ export function createWorld(random) {
     state.shake = 0;
     state.time = 0;
     state.over = false;
+    state.won = false;
     state.xp = 0;
     state.level = 1;
     state.xpNext = XP.baseNext;

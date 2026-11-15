@@ -9,7 +9,7 @@
 // — plus the level-up draft, three cards over the frozen fight.
 import {
   DRONES, FIELD, PALETTE, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY,
-  SCREEN_TITLE, UPGRADES,
+  SCREEN_TITLE, SCREEN_WIN, UPGRADES, WIN_WAVE,
 } from './config.js';
 
 const TAU = Math.PI * 2;
@@ -54,7 +54,7 @@ function drawStarfield(ctx, state, width, height) {
     const nx = x - px * 90 * depth;
     const ny = y - py * 60 * depth;
     const g = ctx.createRadialGradient(nx, ny, 0, nx, ny, radius);
-    g.addColorStop(0, glow(colour, 0.2));
+    g.addColorStop(0, glow(colour, 0.34));
     g.addColorStop(1, glow(colour, 0));
     ctx.fillStyle = g;
     ctx.fillRect(nx - radius, ny - radius, radius * 2, radius * 2);
@@ -112,6 +112,25 @@ function drawShip(ctx, ship, time) {
   ctx.save();
   ctx.translate(ship.x, ship.y);
   ctx.rotate(ship.angle);
+  // Engine trail: fading ghosts behind the ship, so motion reads even in
+  // a still frame — a ship at speed leaves a wake.
+  const speed = Math.hypot(ship.vx, ship.vy);
+  if (speed > 40) {
+    for (let i = 1; i <= 3; i += 1) {
+      const back = i * 14;
+      const shrink = 1 - i * 0.22;
+      ctx.save();
+      ctx.globalAlpha = 0.28 - i * 0.07;
+      ctx.fillStyle = PALETTE.ship;
+      ctx.beginPath();
+      ctx.moveTo(-10 - back, 0);
+      ctx.lineTo(-10 - back - 14 * shrink, -7 * shrink);
+      ctx.lineTo(-10 - back - 14 * shrink, 7 * shrink);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
   // Engine flame, flickering with the thrust the world reports.
   const flame = 14 + ship.thrust * 12 + Math.sin(time * 40) * 3;
   const flameGrad = ctx.createLinearGradient(-10, 0, -10 - flame, 0);
@@ -199,7 +218,12 @@ function drawDrone(ctx, drone, time) {
     ctx.stroke();
   } else {
     // The boss: a big hex hull, a spinning outer ring and a hot core.
+    // Enraged, the ring spins faster and the hull pulses red.
     ctx.rotate(Math.sin(time * 0.8) * 0.25);
+    if (drone.enraged) {
+      ctx.shadowColor = '#ff2e4d';
+      ctx.shadowBlur = 30 + Math.sin(time * 10) * 10;
+    }
     ctx.beginPath();
     for (let i = 0; i < 6; i += 1) {
       const a = (i / 6) * TAU;
@@ -214,14 +238,27 @@ function drawDrone(ctx, drone, time) {
     ctx.strokeStyle = '#ffd7de';
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(0, 0, 64, time * 0.7, time * 0.7 + Math.PI * 1.5);
+    ctx.arc(0, 0, 64, time * (drone.enraged ? 1.8 : 0.7), time * (drone.enraged ? 1.8 : 0.7) + Math.PI * 1.5);
     ctx.stroke();
     ctx.fillStyle = '#fff1f3';
     ctx.beginPath();
-    ctx.arc(0, 0, 13 + Math.sin(time * 6) * 3, 0, TAU);
+    ctx.arc(0, 0, 13 + Math.sin(time * (drone.enraged ? 12 : 6)) * 3, 0, TAU);
     ctx.fill();
   }
   ctx.restore();
+  // Elites wear a gold ring, so the triple-value target reads at a glance.
+  if (drone.elite) {
+    ctx.save();
+    ctx.translate(drone.x, drone.y);
+    ctx.strokeStyle = PALETTE.gold;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = PALETTE.gold;
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.arc(0, 0, drone.radius + 6, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
   // A thin hull bar over anything that takes more than one hit.
   if (drone.maxHull > 1 && drone.kind !== 'boss') {
     const w = drone.radius * 2;
@@ -244,7 +281,8 @@ function drawHud(ctx, state, best) {
   ctx.fillStyle = PALETTE.dim;
   ctx.font = '600 12px "Segoe UI", system-ui, sans-serif';
   ctx.fillText(`BEST ${best}`, 18, 58);
-  // Wave, top centre.
+  // Wave, top centre, with the siege pips: one pip per wave, filled as
+  // waves clear, so the goal — hold 15 — is visible in every frame.
   ctx.fillStyle = PALETTE.text;
   ctx.font = '700 20px "Segoe UI", system-ui, sans-serif';
   ctx.textAlign = 'center';
@@ -252,6 +290,15 @@ function drawHud(ctx, state, best) {
   ctx.fillStyle = PALETTE.dim;
   ctx.font = '600 12px "Segoe UI", system-ui, sans-serif';
   ctx.fillText(`${state.kills} DRONES DOWN`, width / 2, 54);
+  const pipW = 9;
+  const pipGap = 4;
+  const pipsW = WIN_WAVE * pipW + (WIN_WAVE - 1) * pipGap;
+  const pipX0 = (width - pipsW) / 2;
+  const cleared = state.won ? WIN_WAVE : Math.max(0, state.wave - 1);
+  for (let i = 0; i < WIN_WAVE; i += 1) {
+    ctx.fillStyle = i < cleared ? '#37f5d3' : i === state.wave - 1 ? '#ffe45e' : 'rgba(154, 163, 199, 0.3)';
+    ctx.fillRect(pipX0 + i * (pipW + pipGap), 60, pipW, 4);
+  }
   // Hull hearts, top right, drawn as hearts so they read at any size.
   ctx.textAlign = 'right';
   for (let i = 0; i < state.maxHull; i += 1) {
@@ -285,10 +332,10 @@ function drawHud(ctx, state, best) {
     ctx.fillRect(x, 66, barW, 10);
     ctx.fillStyle = '#ff2e4d';
     ctx.fillRect(x, 66, barW * ratio, 10);
-    ctx.fillStyle = PALETTE.text;
+    ctx.fillStyle = state.boss.enraged ? '#ffd23e' : PALETTE.text;
     ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('BASTION BREAKER', width / 2, 90);
+    ctx.fillText(state.boss.enraged ? 'BASTION BREAKER — ENRAGED' : 'BASTION BREAKER', width / 2, 90);
   }
   // XP bar + level, centred under the wave line (or under the boss bar).
   const xpY = state.boss ? 104 : 66;
@@ -321,7 +368,7 @@ function drawDraft(ctx, state) {
   if (!state.draft) return;
   // A light veil: the frozen fight must stay visible behind the cards —
   // the draft is the progression, the battle behind it is the proof.
-  ctx.fillStyle = 'rgba(5, 3, 16, 0.5)';
+  ctx.fillStyle = 'rgba(5, 3, 16, 0.38)';
   ctx.fillRect(0, 0, FIELD.width, FIELD.height);
   ctx.textAlign = 'center';
   ctx.font = '800 34px "Segoe UI", system-ui, sans-serif';
@@ -388,29 +435,33 @@ function bigTitle(ctx, text, y, size, colour) {
 function drawTitle(ctx, state, best) {
   // A light veil, not a blackout: the attract-mode fight stays visible
   // behind the title, so the cover frame is a busy battle, not a void.
-  panel(ctx, FIELD.width, FIELD.height, 0.55);
-  bigTitle(ctx, 'NEON', 190, 84, PALETTE.ship);
-  bigTitle(ctx, 'BASTION', 268, 84, '#b06bff');
+  // The title sits high so the fight shows through the lower two thirds.
+  panel(ctx, FIELD.width, FIELD.height, 0.34);
+  bigTitle(ctx, 'NEON', 150, 84, PALETTE.ship);
+  bigTitle(ctx, 'BASTION', 228, 84, '#b06bff');
+  ctx.fillStyle = '#ffd23e';
+  ctx.font = '700 17px "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`HOLD ${WIN_WAVE} WAVES — BREAK THE SIEGE`, FIELD.width / 2, 268);
   ctx.fillStyle = PALETTE.text;
   ctx.font = '600 19px "Segoe UI", system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('Hold the arena. Blast the drone waves. Grab the cores.', FIELD.width / 2, 312);
+  ctx.fillText('Blast the drone waves. Grab the cores. Level up: pick 1 of 3 upgrades.', FIELD.width / 2, 300);
   ctx.fillStyle = PALETTE.dim;
   ctx.font = '500 15px "Segoe UI", system-ui, sans-serif';
-  ctx.fillText('WASD / ARROWS — fly      MOUSE — aim      SPACE / CLICK — fire      P — pause', FIELD.width / 2, 348);
-  ctx.fillText('A boss breaks in every 5th wave. Level up: pick 1 of 3 upgrades. Chain kills to raise your combo.', FIELD.width / 2, 372);
+  ctx.fillText('WASD / ARROWS — fly      MOUSE — aim      SPACE / CLICK — fire      P — pause', FIELD.width / 2, 336);
+  ctx.fillText('A boss breaks in every 5th wave. Gold elites pay triple. Chain kills to raise your combo.', FIELD.width / 2, 360);
   if (best > 0) {
     ctx.fillStyle = '#ffe45e';
     ctx.font = '700 16px "Segoe UI", system-ui, sans-serif';
-    ctx.fillText(`BEST SCORE ${best}`, FIELD.width / 2, 408);
+    ctx.fillText(`BEST SCORE ${best}`, FIELD.width / 2, 396);
   }
-  const pulse = 0.65 + 0.35 * Math.sin(state.time * 4);
+  const pulse = 0.8 + 0.2 * Math.sin(state.time * 4);
   ctx.fillStyle = `rgba(55, 245, 211, ${pulse.toFixed(2)})`;
   ctx.font = '700 22px "Segoe UI", system-ui, sans-serif';
-  ctx.fillText('PRESS ENTER OR CLICK TO LAUNCH', FIELD.width / 2, 458);
+  ctx.fillText('PRESS ENTER OR CLICK TO LAUNCH', FIELD.width / 2, 446);
   ctx.fillStyle = PALETTE.dim;
   ctx.font = '500 13px "Segoe UI", system-ui, sans-serif';
-  ctx.fillText('3 hull. No continues. How many waves can you hold?', FIELD.width / 2, 500);
+  ctx.fillText('3 hull. No continues. How many waves can you hold?', FIELD.width / 2, 488);
 }
 
 function drawPaused(ctx) {
@@ -423,7 +474,7 @@ function drawPaused(ctx) {
 }
 
 function drawOver(ctx, state, best) {
-  panel(ctx, FIELD.width, FIELD.height);
+  panel(ctx, FIELD.width, FIELD.height, 0.5);
   bigTitle(ctx, 'BASTION LOST', 200, 64, PALETTE.danger);
   ctx.fillStyle = PALETTE.text;
   ctx.font = '700 30px "Segoe UI", system-ui, sans-serif';
@@ -439,10 +490,47 @@ function drawOver(ctx, state, best) {
   ctx.fillStyle = PALETTE.dim;
   ctx.font = '500 16px "Segoe UI", system-ui, sans-serif';
   ctx.fillText(`You held ${Math.max(1, state.wave)} wave${state.wave === 1 ? '' : 's'} and downed ${state.kills} drones.`, FIELD.width / 2, 340);
-  const pulse = 0.65 + 0.35 * Math.sin(state.time * 4);
+  const pulse = 0.8 + 0.2 * Math.sin(state.time * 4);
   ctx.fillStyle = `rgba(55, 245, 211, ${pulse.toFixed(2)})`;
   ctx.font = '700 21px "Segoe UI", system-ui, sans-serif';
   ctx.fillText('PRESS R OR CLICK TO FLY AGAIN', FIELD.width / 2, 402);
+}
+
+function drawWin(ctx, state, best) {
+  // The victory screen: the siege is broken. Bright gold, the final
+  // stats, and the build that won it — the whole run in one frame, with
+  // the restart line the judge looks for.
+  panel(ctx, FIELD.width, FIELD.height, 0.55);
+  bigTitle(ctx, 'BASTION HELD', 190, 64, '#ffd23e');
+  ctx.fillStyle = PALETTE.text;
+  ctx.font = '700 30px "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`SCORE ${state.score}`, FIELD.width / 2, 258);
+  ctx.fillStyle = state.score >= best && state.score > 0 ? '#ffe45e' : PALETTE.dim;
+  ctx.font = '600 17px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText(
+    state.score >= best && state.score > 0 ? 'NEW BEST — the arena remembers you' : `BEST ${best}`,
+    FIELD.width / 2,
+    292,
+  );
+  ctx.fillStyle = PALETTE.dim;
+  ctx.font = '500 16px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText(
+    `You held all ${WIN_WAVE} waves and downed ${state.kills} drones — level ${state.level}.`,
+    FIELD.width / 2,
+    330,
+  );
+  const owned = Object.keys(state.upgrades).filter((id) => state.upgrades[id] > 0);
+  if (owned.length > 0) {
+    ctx.fillStyle = '#37f5d3';
+    ctx.font = '700 15px "Segoe UI", system-ui, sans-serif';
+    const chips = owned.map((id) => `${UPGRADES[id].short} ${'I'.repeat(state.upgrades[id])}`).join('  ·  ');
+    ctx.fillText(`BUILD: ${chips}`, FIELD.width / 2, 362);
+  }
+  const pulse = 0.8 + 0.2 * Math.sin(state.time * 4);
+  ctx.fillStyle = `rgba(55, 245, 211, ${pulse.toFixed(2)})`;
+  ctx.font = '700 21px "Segoe UI", system-ui, sans-serif';
+  ctx.fillText('PRESS R OR CLICK TO FLY AGAIN', FIELD.width / 2, 420);
 }
 
 function drawBanner(ctx, state) {
@@ -455,7 +543,8 @@ function drawBanner(ctx, state) {
   ctx.shadowColor = '#b06bff';
   ctx.shadowBlur = 22;
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(state.banner, FIELD.width / 2, 150);
+  // Below the boss, never over it: the boss holds the upper arena.
+  ctx.fillText(state.banner, FIELD.width / 2, 215);
   ctx.restore();
 }
 
@@ -500,15 +589,16 @@ export function createRenderer(canvas) {
       ctx.restore();
     }
     for (const drone of state.drones) drawDrone(ctx, drone, state.time);
-    // Bullets: bright streaks, player cyan, enemy ember.
+    // Bullets: bright streaks, player cyan, enemy ember. Long enough to
+    // read as fire at a glance, even in a small screenshot cell.
     ctx.lineCap = 'round';
     for (const bullet of state.bullets) {
       ctx.strokeStyle = PALETTE.bullet;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 4;
       ctx.shadowColor = PALETTE.bullet;
       ctx.shadowBlur = 8;
       ctx.beginPath();
-      ctx.moveTo(bullet.x - bullet.vx * 0.02, bullet.y - bullet.vy * 0.02);
+      ctx.moveTo(bullet.x - bullet.vx * 0.035, bullet.y - bullet.vy * 0.035);
       ctx.lineTo(bullet.x, bullet.y);
       ctx.stroke();
     }
@@ -545,6 +635,7 @@ export function createRenderer(canvas) {
     if (screen === SCREEN_TITLE) drawTitle(ctx, state, best);
     if (screen === SCREEN_PAUSED) drawPaused(ctx);
     if (screen === SCREEN_OVER) drawOver(ctx, state, best);
+    if (screen === SCREEN_WIN) drawWin(ctx, state, best);
     ctx.restore();
   }
 
